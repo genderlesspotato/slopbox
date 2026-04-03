@@ -2,7 +2,7 @@
 
 import pytest
 
-from slopbox.formatting import format_bytes, format_duration, health_style
+from slopbox.formatting import format_bytes, format_duration, health_style, phase_style
 
 
 # ---------------------------------------------------------------------------
@@ -61,3 +61,20 @@ def test_format_duration(days, expected):
 ])
 def test_health_style(health, expected):
     assert health_style(health) == expected
+
+
+# ---------------------------------------------------------------------------
+# phase_style
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("phase, expected", [
+    ("hot",     "yellow"),
+    ("warm",    "blue"),
+    ("cold",    "cyan"),
+    ("frozen",  "magenta"),
+    ("delete",  "red"),
+    ("unknown", "white"),
+    ("",        "white"),
+])
+def test_phase_style(phase, expected):
+    assert phase_style(phase) == expected

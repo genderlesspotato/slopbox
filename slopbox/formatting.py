@@ -31,6 +31,16 @@ def format_duration(days: float) -> str:
 # Rich style helpers
 # ---------------------------------------------------------------------------
 
+def phase_style(phase: str) -> str:
+    return {
+        "hot": "yellow",
+        "warm": "blue",
+        "cold": "cyan",
+        "frozen": "magenta",
+        "delete": "red",
+    }.get(phase, "white")
+
+
 def health_style(health: str) -> str:
     return {
         "green": "green",

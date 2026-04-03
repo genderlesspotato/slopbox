@@ -15,51 +15,18 @@ Environment variables:
 import sys
 import time
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 
 from elasticsearch import Elasticsearch, AuthenticationException, ConnectionError, TransportError
 from rich.console import Console
-from rich.rule import Rule
 from rich.table import Table
 from rich import box
 
 from slopbox.client import build_client
-from slopbox.formatting import format_bytes, format_duration, health_style
+from slopbox.formatting import format_bytes, format_duration, phase_style, health_style
 
-
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
-
-@dataclass
-class IndexProfile:
-    name: str
-    policy: str
-    phase: str
-    phase_time: str      # human-readable time in current phase
-    index_age: str       # human-readable total index age
-    index_age_days: float
-    docs: int
-    size_bytes: int
-    size_human: str
-    health: str
-    status: str
-
-
-# ---------------------------------------------------------------------------
-# Formatting helpers (ILM-specific)
-# ---------------------------------------------------------------------------
-
-def phase_style(phase: str) -> str:
-    return {
-        "hot": "yellow",
-        "warm": "blue",
-        "cold": "cyan",
-        "frozen": "magenta",
-        "delete": "red",
-    }.get(phase, "white")
+from domain.es.models import IndexProfile
+from domain.es.types import RawCatIndexEntry, RawIlmExplainEntry
 
 
 # ---------------------------------------------------------------------------
@@ -125,10 +92,10 @@ def correlate_data(
     ilm_indices: dict,
     cat_by_index: dict,
     policies: dict,
-) -> dict:
+) -> tuple[dict, int]:
     """Join ILM explain + cat stats → grouped by policy name."""
     now_ms = time.time() * 1000
-    grouped = defaultdict(list)
+    grouped: dict = defaultdict(list)
     skipped = 0
 
     for index_name, ilm_info in ilm_indices.items():
@@ -137,33 +104,38 @@ def correlate_data(
             skipped += 1
             continue
 
-        policy_name = ilm_info.get("policy", "unknown")
-        phase = ilm_info.get("phase", "unknown")
+        raw_ilm = RawIlmExplainEntry.model_validate(ilm_info)
+        raw_cat = RawCatIndexEntry.model_validate(cat_info)
 
         # Index age from creation epoch
-        creation_epoch_ms = int(cat_info.get("creation.date.epoch") or 0)
-        age_days = (now_ms - creation_epoch_ms) / 86_400_000 if creation_epoch_ms else -1.0
+        age_days = (
+            (now_ms - raw_cat.creation_epoch_ms) / 86_400_000
+            if raw_cat.creation_epoch_ms
+            else -1.0
+        )
 
         # Phase age from ILM phase execution timestamp
-        phase_entry_ms = (ilm_info.get("phase_execution") or {}).get("modified_date_in_millis")
-        phase_age_days = (now_ms - phase_entry_ms) / 86_400_000 if phase_entry_ms else -1.0
-
-        size_bytes = int(cat_info.get("store.size") or 0)
+        phase_entry_ms = (
+            raw_ilm.phase_execution.modified_date_in_millis
+            if raw_ilm.phase_execution
+            else None
+        )
+        phase_age_days = (
+            (now_ms - phase_entry_ms) / 86_400_000 if phase_entry_ms else -1.0
+        )
 
         profile = IndexProfile(
             name=index_name,
-            policy=policy_name,
-            phase=phase,
-            phase_time=format_duration(phase_age_days),
-            index_age=format_duration(age_days),
+            policy=raw_ilm.policy,
+            phase=raw_ilm.phase,
+            phase_age_days=phase_age_days,
             index_age_days=age_days,
-            docs=int(cat_info.get("docs.count") or 0),
-            size_bytes=size_bytes,
-            size_human=format_bytes(size_bytes),
-            health=cat_info.get("health", "unknown"),
-            status=cat_info.get("status", "unknown"),
+            docs=raw_cat.docs_count,
+            size_bytes=raw_cat.store_size_bytes,
+            health=raw_cat.health,
+            status=raw_cat.status,
         )
-        grouped[policy_name].append(profile)
+        grouped[raw_ilm.policy].append(profile)
 
     return dict(grouped), skipped
 

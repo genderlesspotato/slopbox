@@ -9,8 +9,8 @@ Mock data covers two Elasticsearch generations:
 import pytest
 from unittest.mock import patch
 
+from slopbox.formatting import format_bytes, format_duration
 from ilm_review import (
-    IndexProfile,
     correlate_data,
     parse_all_policies,
     parse_rollover_criteria,
