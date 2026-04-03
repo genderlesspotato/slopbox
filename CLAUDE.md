@@ -67,7 +67,7 @@ uv run --group dev pytest
 
 Tests live in `tests/` and use static mock data shaped after real ES 7.x and 8.x API responses. **No running cluster is required.**
 
-Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for determinism.
+Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for determinism. Tests for shared utilities live in `tests/test_formatting.py` and `tests/test_client.py`.
 
 ---
 
@@ -75,14 +75,34 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 
 | File | Role |
 |------|------|
-| `ilm_review.py` | ILM review tool — 362 lines |
-| `tests/test_ilm_review.py` | Unit tests — 480 lines, 30+ cases |
+| `ilm_review.py` | ILM review tool |
+| `slopbox/formatting.py` | Shared formatting utilities: `format_bytes`, `format_duration`, `health_style` |
+| `slopbox/client.py` | Shared Elasticsearch client factory: `build_client()` |
+| `tests/test_ilm_review.py` | Unit tests for `ilm_review.py` |
+| `tests/test_formatting.py` | Unit tests for `slopbox.formatting` |
+| `tests/test_client.py` | Unit tests for `slopbox.client` |
 | `pyproject.toml` | Project metadata, dependencies, pytest config |
 | `uv.lock` | Pinned dependency tree (committed intentionally) |
 | `.envrc` | direnv: loads `.env`, activates uv venv via `layout uv` |
 | `.env.example` | Credential template — copy to `.env`, never commit `.env` |
 
 ---
+
+## Shared library (`slopbox/`)
+
+Utilities shared across tools live in the `slopbox/` package:
+
+| Module | Contents |
+|--------|----------|
+| `slopbox/formatting.py` | `format_bytes`, `format_duration`, `health_style` |
+| `slopbox/client.py` | `build_client()` — env var validation + Elasticsearch client construction |
+
+Import them directly in any tool:
+
+```python
+from slopbox.client import build_client
+from slopbox.formatting import format_bytes, format_duration, health_style
+```
 
 ## Architecture of `ilm_review.py`
 
@@ -100,18 +120,17 @@ Data flows through a clear pipeline:
 fetch → parse → correlate → render
 ```
 
-Key components by line range:
+Key components:
 
-| Lines | Component | Role |
-|-------|-----------|------|
-| 30–46 | `IndexProfile` dataclass | Per-index data model |
-| 50–91 | Formatting helpers | `format_bytes`, `format_duration`, `phase_style`, `health_style` |
-| 96–121 | `build_client()` | Validates env vars, constructs Elasticsearch client |
-| 127–149 | Fetch functions | Three thin API wrappers |
-| 154–176 | Parse functions | `parse_rollover_criteria`, `parse_all_policies` |
-| 182–227 | `correlate_data()` | Joins ILM explain + cat stats, calculates ages, groups by policy |
-| 233–316 | `render_report()` | Builds and prints Rich table output |
-| 326–361 | `main()` | Orchestrates everything, top-level error handling |
+| Component | Role |
+|-----------|------|
+| `IndexProfile` dataclass | Per-index data model |
+| `phase_style()` | ILM-phase → Rich colour mapping (hot/warm/cold/frozen/delete) |
+| Fetch functions | Three thin API wrappers |
+| `parse_rollover_criteria`, `parse_all_policies` | ILM policy parsing |
+| `correlate_data()` | Joins ILM explain + cat stats, calculates ages, groups by policy |
+| `render_report()` | Builds and prints Rich table output |
+| `main()` | Orchestrates everything, top-level error handling |
 
 Both ES 7.x and 8.x response shapes are supported throughout.
 
@@ -147,11 +166,12 @@ Both ES 7.x and 8.x response shapes are supported throughout.
 ## Adding a New Tool
 
 1. Drop the script at the repo root: `my_tool.py`
-2. Add any new dependencies to `[project.dependencies]` in `pyproject.toml`
-3. Run `uv lock && uv sync` (or re-enter the directory so direnv triggers sync)
-4. Add tests under `tests/`
+2. Import shared utilities from `slopbox.*` as needed (client, formatting)
+3. Add any new dependencies to `[project.dependencies]` in `pyproject.toml`
+4. Run `uv lock && uv sync` (or re-enter the directory so direnv triggers sync)
+5. Add tests under `tests/`; extract new shared utilities to `slopbox/` if they'll be reused
 
-Shared dependencies (`rich`, `elasticsearch`) are already available without extra steps.
+Shared dependencies (`rich`, `elasticsearch`) and `slopbox.*` utilities are available without extra steps.
 
 ---
 

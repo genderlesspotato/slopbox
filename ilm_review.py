@@ -12,7 +12,6 @@ Environment variables:
     ES_PASSWORD   - Basic auth password
 """
 
-import os
 import sys
 import time
 from collections import defaultdict
@@ -25,6 +24,9 @@ from rich.console import Console
 from rich.rule import Rule
 from rich.table import Table
 from rich import box
+
+from slopbox.client import build_client
+from slopbox.formatting import format_bytes, format_duration, health_style
 
 
 # ---------------------------------------------------------------------------
@@ -47,30 +49,8 @@ class IndexProfile:
 
 
 # ---------------------------------------------------------------------------
-# Formatting helpers
+# Formatting helpers (ILM-specific)
 # ---------------------------------------------------------------------------
-
-def format_bytes(n: int) -> str:
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} PB"
-
-
-def format_duration(days: float) -> str:
-    if days < 0:
-        return "unknown"
-    if days < 1:
-        hours = int(days * 24)
-        mins = int((days * 24 - hours) * 60)
-        if hours == 0:
-            return f"{mins}m"
-        return f"{hours}h {mins}m"
-    d = int(days)
-    h = int((days - d) * 24)
-    return f"{d}d {h}h" if h else f"{d}d"
-
 
 def phase_style(phase: str) -> str:
     return {
@@ -80,45 +60,6 @@ def phase_style(phase: str) -> str:
         "frozen": "magenta",
         "delete": "red",
     }.get(phase, "white")
-
-
-def health_style(health: str) -> str:
-    return {
-        "green": "green",
-        "yellow": "yellow",
-        "red": "red",
-    }.get(health, "white")
-
-
-# ---------------------------------------------------------------------------
-# Client construction
-# ---------------------------------------------------------------------------
-
-def build_client() -> Elasticsearch:
-    host = os.environ.get("ES_HOST")
-    cloud_id = os.environ.get("ES_CLOUD_ID")
-    api_key = os.environ.get("ES_API_KEY")
-    username = os.environ.get("ES_USERNAME")
-    password = os.environ.get("ES_PASSWORD")
-
-    if not host and not cloud_id:
-        sys.exit("ERROR: ES_HOST or ES_CLOUD_ID must be set")
-    if not api_key and not (username and password):
-        sys.exit("ERROR: ES_API_KEY or both ES_USERNAME and ES_PASSWORD must be set")
-
-    kwargs: dict = {}
-
-    if cloud_id:
-        kwargs["cloud_id"] = cloud_id
-    else:
-        kwargs["hosts"] = [host]
-
-    if api_key:
-        kwargs["api_key"] = api_key
-    else:
-        kwargs["basic_auth"] = (username, password)
-
-    return Elasticsearch(**kwargs)
 
 
 # ---------------------------------------------------------------------------
