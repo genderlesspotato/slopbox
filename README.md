@@ -125,11 +125,35 @@ responses. No running cluster is required.
 
 ---
 
+## Dependency pinning (`uv.lock`)
+
+`uv.lock` is committed intentionally. This is an ops tool — an application,
+not a library — so pinning all transitive dependencies is the right default:
+
+- **Reproducibility**: every clone installs byte-for-byte identical packages.
+  No silent breakage from an upstream release.
+- **Security**: the lockfile is auditable and diffs clearly when deps change,
+  making supply-chain review straightforward.
+- **Offline use**: ops tooling often runs in restricted environments. A
+  committed lockfile lets `uv sync` work from a local cache without hitting
+  PyPI.
+
+When you bump a dependency in `pyproject.toml`, regenerate and commit the
+lockfile in the same commit so they never diverge:
+
+```bash
+uv lock
+git add pyproject.toml uv.lock
+git commit -m "chore: bump <package> to x.y.z"
+```
+
+---
+
 ## Adding a new tool
 
 1. Drop your script at the repo root: `my_tool.py`
 2. Add any new dependencies to `[project.dependencies]` in `pyproject.toml`
-3. Run `uv sync` (or re-enter the directory so direnv triggers it)
+3. Run `uv lock && uv sync` (or re-enter the directory so direnv triggers sync)
 4. Add tests under `tests/`
 
 Shared dependencies (e.g. `rich`, `elasticsearch`) are already available to
