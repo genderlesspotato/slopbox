@@ -14,8 +14,15 @@ from ilm_review import (
     correlate_data,
     parse_all_policies,
     parse_rollover_criteria,
+    profile_data_streams,
     rollover_criteria_str,
+    _parse_size_bytes,
+    _recommend,
+    TARGET_MIN_HOURS,
+    TARGET_MAX_HOURS,
+    MAX_SHARD_BYTES,
 )
+from domain.es.types import RawDataStream
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +182,7 @@ CAT_INDICES = {
         "docs.count": "12450221",
         "store.size": "8912896000",
         "creation.date.epoch": str(CREATION_10D_MS),
+        "pri": "2",
         "health": "green",
         "status": "open",
     },
@@ -183,10 +191,14 @@ CAT_INDICES = {
         "docs.count": "198000000",
         "store.size": "45000000000",
         "creation.date.epoch": str(CREATION_17D_MS),
+        "pri": "2",
         "health": "yellow",
         "status": "open",
     },
 }
+
+# Empty data streams list for tests that don't exercise profiling
+NO_DATA_STREAMS: list[RawDataStream] = []
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +294,7 @@ def test_rollover_criteria_str_multiple():
 @patch("ilm_review.time.time", return_value=NOW_S)
 def test_correlate_data_basic(_mock_time):
     parsed_policies = parse_all_policies(POLICY_7X)
-    grouped, skipped = correlate_data(ILM_EXPLAIN, CAT_INDICES, parsed_policies)
+    grouped, skipped = correlate_data(ILM_EXPLAIN, CAT_INDICES, parsed_policies, NO_DATA_STREAMS)
 
     assert skipped == 0
     assert "logs-default" in grouped
@@ -292,7 +304,7 @@ def test_correlate_data_basic(_mock_time):
 @patch("ilm_review.time.time", return_value=NOW_S)
 def test_correlate_data_index_age(_mock_time):
     parsed_policies = parse_all_policies(POLICY_7X)
-    grouped, _ = correlate_data(ILM_EXPLAIN, CAT_INDICES, parsed_policies)
+    grouped, _ = correlate_data(ILM_EXPLAIN, CAT_INDICES, parsed_policies, NO_DATA_STREAMS)
 
     profiles = {p.name: p for p in grouped["logs-default"]}
     assert abs(profiles["logs-app-000023"].index_age_days - 10.0) < 0.01
@@ -302,7 +314,7 @@ def test_correlate_data_index_age(_mock_time):
 @patch("ilm_review.time.time", return_value=NOW_S)
 def test_correlate_data_phase_age_string(_mock_time):
     parsed_policies = parse_all_policies(POLICY_7X)
-    grouped, _ = correlate_data(ILM_EXPLAIN, CAT_INDICES, parsed_policies)
+    grouped, _ = correlate_data(ILM_EXPLAIN, CAT_INDICES, parsed_policies, NO_DATA_STREAMS)
 
     profiles = {p.name: p for p in grouped["logs-default"]}
     # Both indices entered their phase 3 days ago
@@ -313,7 +325,7 @@ def test_correlate_data_phase_age_string(_mock_time):
 @patch("ilm_review.time.time", return_value=NOW_S)
 def test_correlate_data_docs_and_size(_mock_time):
     parsed_policies = parse_all_policies(POLICY_7X)
-    grouped, _ = correlate_data(ILM_EXPLAIN, CAT_INDICES, parsed_policies)
+    grouped, _ = correlate_data(ILM_EXPLAIN, CAT_INDICES, parsed_policies, NO_DATA_STREAMS)
 
     profiles = {p.name: p for p in grouped["logs-default"]}
     p = profiles["logs-app-000023"]
@@ -342,7 +354,7 @@ def test_correlate_data_missing_cat_entry_increments_skipped(_mock_time):
         },
     }
     parsed_policies = parse_all_policies(POLICY_7X)
-    grouped, skipped = correlate_data(ilm_with_extra, CAT_INDICES, parsed_policies)
+    grouped, skipped = correlate_data(ilm_with_extra, CAT_INDICES, parsed_policies, NO_DATA_STREAMS)
 
     assert skipped == 1
     assert len(grouped["logs-default"]) == 2  # extra index silently skipped
@@ -359,7 +371,7 @@ def test_correlate_data_null_docs_and_size(_mock_time):
         },
     }
     parsed_policies = parse_all_policies(POLICY_7X)
-    grouped, _ = correlate_data(ILM_EXPLAIN, cat_with_nulls, parsed_policies)
+    grouped, _ = correlate_data(ILM_EXPLAIN, cat_with_nulls, parsed_policies, NO_DATA_STREAMS)
 
     profiles = {p.name: p for p in grouped["logs-default"]}
     p = profiles["logs-app-000023"]
@@ -376,7 +388,7 @@ def test_correlate_data_no_phase_execution(_mock_time):
         }
     }
     parsed_policies = parse_all_policies(POLICY_7X)
-    grouped, skipped = correlate_data(ilm_no_phase_exec, CAT_INDICES, parsed_policies)
+    grouped, skipped = correlate_data(ilm_no_phase_exec, CAT_INDICES, parsed_policies, NO_DATA_STREAMS)
 
     assert skipped == 0
     profiles = {p.name: p for p in grouped["logs-default"]}
@@ -393,7 +405,7 @@ def test_correlate_data_unknown_policy_reference(_mock_time):
         }
     }
     parsed_policies = parse_all_policies(POLICY_7X)  # does not contain deleted-policy
-    grouped, skipped = correlate_data(ilm_orphan, CAT_INDICES, parsed_policies)
+    grouped, skipped = correlate_data(ilm_orphan, CAT_INDICES, parsed_policies, NO_DATA_STREAMS)
 
     assert skipped == 0
     assert "deleted-policy" in grouped
@@ -427,7 +439,7 @@ def test_correlate_data_8x_frozen_phase(_mock_time):
         }
     }
     parsed_policies = parse_all_policies(POLICY_8X)
-    grouped, skipped = correlate_data(ilm_frozen, cat_frozen, parsed_policies)
+    grouped, skipped = correlate_data(ilm_frozen, cat_frozen, parsed_policies, NO_DATA_STREAMS)
 
     assert skipped == 0
     profiles = {p.name: p for p in grouped["logs-default"]}
