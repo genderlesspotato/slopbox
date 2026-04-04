@@ -8,7 +8,7 @@
 
 | Script | Purpose |
 |--------|---------|
-| `ilm_review.py` | Profiles all ILM-managed indices grouped by policy; shows rollover criteria, phase, age, doc count, and size |
+| `ilm_review.py` | Inventories ILM-managed indices grouped by policy and emits per-data-stream recommendations to tune ILM policy and index template settings |
 
 **Runtime:** Python 3.11+, managed by [uv](https://docs.astral.sh/uv/).
 
@@ -91,7 +91,7 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 | `domain/es/models.py` | ES domain objects (`IndexProfile`, …) — Pydantic v2 with `@computed_field` display strings |
 | `domain/es/types.py` | Raw ES API boundary models (`RawCatIndexEntry`, `RawIlmExplainEntry`, …) — owns all string→int coercion |
 | `domain/k8s/models.py` | k8s domain objects (`PodProfile`, …) — constructed via classmethods from k8s client objects |
-| `tests/test_ilm_review.py` | ILM tool unit tests — 30+ cases |
+| `tests/test_ilm_review.py` | ILM tool unit tests — 49+ cases including full profiling suite |
 | `tests/test_domain_es.py` | Boundary coercion + domain model tests |
 | `tests/test_formatting.py` | Formatter helper tests |
 | `tests/test_client.py` | Unit tests for `slopbox.client` |
@@ -171,31 +171,61 @@ No `k8s/types.py` module is needed; the k8s client itself is the boundary type.
 
 ## Architecture of `ilm_review.py`
 
-The tool makes **exactly 3 API calls** per run (design constraint — keep it that way):
+The tool makes **exactly 5 API calls** per run:
 
 ```
-fetch_ilm_policies()     →  GET /_ilm/policy
-fetch_ilm_explain()      →  GET /*/_ilm/explain?only_managed=true
-fetch_cat_indices()      →  GET /_cat/indices?bytes=b
+fetch_ilm_policies()    →  GET /_ilm/policy
+fetch_ilm_explain()     →  GET /*/_ilm/explain?only_managed=true
+fetch_cat_indices()     →  GET /_cat/indices?bytes=b  (includes pri shard count)
+fetch_cat_nodes()       →  GET /_cat/nodes?h=node.role  (counts data-role nodes)
+fetch_data_streams()    →  GET /_data_stream/*  (template names + backing index lists)
 ```
 
 Data flows through a clear pipeline:
 
 ```
-fetch → parse → correlate → render
+fetch → parse → correlate → profile → render
 ```
 
 Key components:
 
 | Component | Role |
 |-----------|------|
-| Fetch functions | Three thin API wrappers |
+| Fetch functions | Five thin API wrappers |
 | `parse_rollover_criteria`, `parse_all_policies` | Parse ILM policy shapes |
-| `correlate_data()` | Joins ILM explain + cat stats via domain boundary types; groups by policy |
-| `render_report()` | Builds and prints Rich table output |
+| `correlate_data()` | Joins ILM explain + cat stats + data stream membership via domain boundary types; groups by policy |
+| `profile_data_streams()` | Computes per-data-stream rotation cadence; emits `DataStreamProfile` with recommendation |
+| `_recommend()` | Stateless recommendation ladder: shard size → shard count → SPLIT |
+| `render_report()` | Builds and prints inventory table + recommendations table |
 | `main()` | Orchestrates everything, top-level error handling |
 
 Both ES 7.x and 8.x response shapes are supported throughout.
+
+### Profiling logic
+
+`profile_data_streams()` groups `IndexProfile` objects by data stream name (using the
+`data_stream` field populated from `_data_stream/*`), then for each stream:
+
+1. Sorts closed (non-write) indices by `creation_epoch_ms`
+2. Computes `avg_rotation_hours` from gaps between consecutive creation times
+3. Computes `avg_shard_size_bytes` from `size_bytes / primary_shards` for closed indices
+4. Calls `_recommend()` to produce a recommendation
+
+**Recommendation ladder** (requires `max_primary_shard_size` in the policy):
+
+| Condition | Recommendation |
+|-----------|----------------|
+| rotation < 6 h, avg shard < 50 GB | `increase max_primary_shard_size` to proportional target |
+| rotation < 6 h, shard at 50 GB, pri < 60 % of data nodes | `increase number_of_shards` |
+| rotation < 6 h, both levers maxed | `SPLIT into multiple independent indices` |
+| rotation > 24 h, pri > 1 | `decrease number_of_shards` |
+| rotation > 24 h, pri = 1 | `decrease max_primary_shard_size` |
+| 6 h ≤ rotation ≤ 24 h | `OK` |
+| < 2 rolled-over indices | `insufficient history` |
+| policy lacks `max_primary_shard_size` | `cannot profile` |
+
+Constants `TARGET_MIN_HOURS`, `TARGET_MAX_HOURS`, `MAX_SHARD_BYTES`, and
+`MAX_NODE_FRACTION` are module-level and can be tuned without touching logic.
 
 ---
 
