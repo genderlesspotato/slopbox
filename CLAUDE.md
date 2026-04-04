@@ -303,3 +303,20 @@ fix: handle missing phase_time_millis in ES 7.x responses
 chore: bump elasticsearch to 9.4.0
 docs: document rollover criteria formatting
 ```
+
+---
+
+## Engineering Practices
+
+### Commit discipline
+- Make **small, logically grouped commits** — each commit should represent one coherent change that can be reviewed in isolation
+- A single feature may span multiple commits (e.g. domain model, then business logic, then tests, then docs), but each commit must leave the repo in a working state
+
+### Change completeness
+Every change must be reflected across all affected artifacts:
+- **Tests** — add or update tests for any changed behaviour
+- **Documentation** — update `README.md`, `CLAUDE.md`, and any relevant docstrings
+- **`pyproject.toml` / `uv.lock`** — update together whenever dependencies change
+
+### Correctness and reliability over performance
+These are ops tools that operators depend on for production decisions. Correctness and reliability are the top priorities. Performance is still relevant — tools run against large clusters with thousands of indices — but never sacrifice correctness for speed. Prefer clear, verifiable logic; optimise only where there is a demonstrated bottleneck.
