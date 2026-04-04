@@ -315,7 +315,7 @@ docs: document rollover criteria formatting
 ### Change completeness
 Every change must be reflected across all affected artifacts:
 - **Tests** — add or update tests for any changed behaviour
-- **Documentation** — update `CLAUDE.md` and any relevant docstrings
+- **Documentation** — update `README.md`, `CLAUDE.md`, and any relevant docstrings
 - **`pyproject.toml` / `uv.lock`** — update together whenever dependencies change
 
 ### Correctness and reliability over performance
