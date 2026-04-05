@@ -13,6 +13,8 @@ Environment variables:
     ES_PASSWORD   - Basic auth password
 """
 
+import json
+import logging
 import math
 import sys
 import time
@@ -27,6 +29,8 @@ from rich import box
 
 from slopbox.client import build_client
 from slopbox.formatting import format_bytes, format_duration, phase_style, health_style
+
+logger = logging.getLogger("ilm_review")
 
 from slopbox_domain.es.models import IndexProfile
 from slopbox_domain.es.types import RawCatIndexEntry, RawIlmExplainEntry, RawDataStream
@@ -380,6 +384,142 @@ def rollover_criteria_str(criteria: dict) -> str:
     return "  ".join(f"{k}={v}" for k, v in criteria.items())
 
 
+def render_report_json(
+    grouped: dict,
+    policies: dict,
+    skipped: int,
+    profiles: list[DataStreamProfile],
+    data_node_count: int,
+) -> None:
+    """Emit the full ILM review as a single JSON document to stdout.
+
+    Output schema::
+
+        {
+          "generated_at": "<ISO-8601 UTC>",
+          "summary": {
+            "policy_count": int,
+            "managed_index_count": int,
+            "data_node_count": int,
+            "skipped_index_count": int
+          },
+          "policies": [
+            {
+              "name": str,
+              "phases": [str, ...],
+              "rollover_criteria": {str: str, ...},
+              "index_count": int,
+              "total_docs": int,
+              "total_size_bytes": int,
+              "total_size_human": str,
+              "indices": [
+                {
+                  "name": str,
+                  "phase": str,
+                  "index_age_days": float,
+                  "phase_age_days": float,
+                  "docs": int,
+                  "size_bytes": int,
+                  "size_human": str,
+                  "primary_shards": int,
+                  "shard_size_bytes": int,
+                  "shard_size_human": str,
+                  "health": str,
+                  "status": str,
+                  "is_write_index": bool,
+                  "data_stream": str | null
+                }
+              ]
+            }
+          ],
+          "recommendations": [
+            {
+              "name": str,
+              "template": str,
+              "policy": str,
+              "avg_rotation_hours": float | null,
+              "avg_shard_size_bytes": int | null,
+              "avg_shard_size_human": str | null,
+              "primary_shards": int,
+              "max_shard_size_configured": str | null,
+              "recommendation": str,
+              "detail": str | null
+            }
+          ]
+        }
+    """
+    total_indices = sum(len(v) for v in grouped.values())
+    now_str = datetime.now(timezone.utc).isoformat()
+
+    policy_list = []
+    for policy_name in sorted(grouped.keys()):
+        policy_profiles = grouped[policy_name]
+        policy_info = policies.get(policy_name, {})
+        criteria = policy_info.get("rollover", {})
+        phase_list = policy_info.get("phases", [])
+
+        total_docs = sum(p.docs for p in policy_profiles)
+        total_bytes = sum(p.size_bytes for p in policy_profiles)
+
+        index_list = []
+        for p in sorted(policy_profiles, key=lambda x: x.name):
+            index_list.append({
+                "name": p.name,
+                "phase": p.phase,
+                "index_age_days": round(p.index_age_days, 2),
+                "phase_age_days": round(p.phase_age_days, 2),
+                "docs": p.docs,
+                "size_bytes": p.size_bytes,
+                "size_human": p.size_human,
+                "primary_shards": p.primary_shards,
+                "shard_size_bytes": p.shard_size_bytes,
+                "shard_size_human": p.shard_size_human,
+                "health": p.health,
+                "status": p.status,
+                "is_write_index": p.is_write_index,
+                "data_stream": p.data_stream,
+            })
+
+        policy_list.append({
+            "name": policy_name,
+            "phases": phase_list,
+            "rollover_criteria": criteria,
+            "index_count": len(policy_profiles),
+            "total_docs": total_docs,
+            "total_size_bytes": total_bytes,
+            "total_size_human": format_bytes(total_bytes),
+            "indices": index_list,
+        })
+
+    rec_list = []
+    for dp in profiles:
+        rec_list.append({
+            "name": dp.name,
+            "template": dp.template,
+            "policy": dp.policy,
+            "avg_rotation_hours": round(dp.avg_rotation_hours, 2) if dp.avg_rotation_hours is not None else None,
+            "avg_shard_size_bytes": dp.avg_shard_size_bytes,
+            "avg_shard_size_human": format_bytes(dp.avg_shard_size_bytes) if dp.avg_shard_size_bytes is not None else None,
+            "primary_shards": dp.primary_shards,
+            "max_shard_size_configured": dp.max_shard_size_str,
+            "recommendation": dp.recommendation,
+            "detail": dp.detail,
+        })
+
+    doc = {
+        "generated_at": now_str,
+        "summary": {
+            "policy_count": len(grouped),
+            "managed_index_count": total_indices,
+            "data_node_count": data_node_count,
+            "skipped_index_count": skipped,
+        },
+        "policies": policy_list,
+        "recommendations": rec_list,
+    }
+    print(json.dumps(doc, indent=2))
+
+
 def render_report(
     console: Console,
     grouped: dict,
@@ -541,44 +681,76 @@ def render_report(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    console = Console()
+    from slopbox.logging import configure_logging
+    log_format = configure_logging()
+    console = Console() if log_format == "human" else None
 
     client = build_client()
 
     try:
-        with console.status("Fetching ILM policies..."):
+        if console:
+            with console.status("Fetching ILM policies..."):
+                policies_raw = fetch_ilm_policies(client)
+        else:
+            logger.info("Fetching ILM policies")
             policies_raw = fetch_ilm_policies(client)
 
-        with console.status("Fetching ILM state for managed indices..."):
+        if console:
+            with console.status("Fetching ILM state for managed indices..."):
+                ilm_raw = fetch_ilm_explain(client)
+        else:
+            logger.info("Fetching ILM state for managed indices")
             ilm_raw = fetch_ilm_explain(client)
 
-        with console.status("Fetching index stats..."):
+        if console:
+            with console.status("Fetching index stats..."):
+                cat_raw = fetch_cat_indices(client)
+        else:
+            logger.info("Fetching index stats")
             cat_raw = fetch_cat_indices(client)
 
-        with console.status("Fetching data stream definitions..."):
+        if console:
+            with console.status("Fetching data stream definitions..."):
+                data_streams = fetch_data_streams(client)
+        else:
+            logger.info("Fetching data stream definitions")
             data_streams = fetch_data_streams(client)
 
-        with console.status("Fetching cluster node topology..."):
+        if console:
+            with console.status("Fetching cluster node topology..."):
+                data_node_count = fetch_cat_nodes(client)
+        else:
+            logger.info("Fetching cluster node topology")
             data_node_count = fetch_cat_nodes(client)
 
     except AuthenticationException:
-        sys.exit("ERROR: Authentication failed — check ES_USERNAME/ES_PASSWORD or ES_API_KEY")
+        logger.error("Authentication failed — check ES_USERNAME/ES_PASSWORD or ES_API_KEY")
+        sys.exit(1)
     except ConnectionError as e:
-        sys.exit(f"ERROR: Could not connect to Elasticsearch: {e}")
+        logger.error("Could not connect to Elasticsearch: %s", e)
+        sys.exit(1)
     except TransportError as e:
-        sys.exit(f"ERROR: Elasticsearch API error: {e}")
+        logger.error("Elasticsearch API error: %s", e)
+        sys.exit(1)
 
     policies = parse_all_policies(policies_raw)
     cat_by_index = {item["index"]: item for item in cat_raw}
     ilm_indices = ilm_raw.get("indices", {})
 
     if not ilm_indices:
-        console.print("[yellow]No ILM-managed indices found.[/yellow]")
+        if console:
+            console.print("[yellow]No ILM-managed indices found.[/yellow]")
+        else:
+            logger.info("No ILM-managed indices found")
         return
 
     grouped, skipped = correlate_data(ilm_indices, cat_by_index, policies, data_streams)
     stream_profiles = profile_data_streams(grouped, policies, data_streams, data_node_count)
-    render_report(console, grouped, policies, skipped, stream_profiles, data_node_count)
+
+    if log_format == "human":
+        render_report(console, grouped, policies, skipped, stream_profiles, data_node_count)
+    else:
+        render_report_json(grouped, policies, skipped, stream_profiles, data_node_count)
 
 
 if __name__ == "__main__":

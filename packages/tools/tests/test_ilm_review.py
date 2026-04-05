@@ -6,15 +6,19 @@ Mock data covers two Elasticsearch generations:
           max_primary_shard_docs (added in 8.2)
 """
 
+import json
+
 import pytest
 from unittest.mock import patch
 
 from slopbox.formatting import format_bytes, format_duration
 from ilm_review import (
+    DataStreamProfile,
     correlate_data,
     parse_all_policies,
     parse_rollover_criteria,
     profile_data_streams,
+    render_report_json,
     rollover_criteria_str,
     _parse_size_bytes,
     _recommend,
@@ -804,3 +808,178 @@ def test_profile_data_streams_avg_shard_size_excludes_write_index(_mock_time):
     dp = result[0]
     assert dp.avg_shard_size_bytes is not None
     assert dp.avg_shard_size_bytes == 5 * 1024**3
+
+
+# ---------------------------------------------------------------------------
+# render_report_json
+# ---------------------------------------------------------------------------
+
+def _make_ds_profile(**kwargs) -> DataStreamProfile:
+    defaults = dict(
+        name="logs-app",
+        template="logs-app-default",
+        policy="logs-default",
+        avg_rotation_hours=8.0,
+        avg_shard_size_bytes=5 * 1024**3,
+        primary_shards=2,
+        max_shard_size_str="30gb",
+        recommendation="OK",
+        detail=None,
+    )
+    return DataStreamProfile(**{**defaults, **kwargs})
+
+
+def _make_grouped():
+    from slopbox_domain.es.models import IndexProfile
+    p = IndexProfile(
+        name=".ds-logs-app-000001",
+        policy="logs-default",
+        phase="hot",
+        index_age_days=2.0,
+        phase_age_days=2.0,
+        docs=1_000_000,
+        size_bytes=10 * 1024**3,
+        primary_shards=2,
+        is_write_index=False,
+        data_stream="logs-app",
+        creation_epoch_ms=1_700_000_000_000,
+        health="green",
+        status="open",
+    )
+    return {"logs-default": [p]}
+
+
+def test_render_report_json_emits_valid_json(capsys):
+    grouped = _make_grouped()
+    policies = parse_all_policies(POLICY_HOT_30GB)
+    profiles = [_make_ds_profile()]
+    render_report_json(grouped, policies, skipped=0, profiles=profiles, data_node_count=5)
+    out = capsys.readouterr().out
+    parsed = json.loads(out)  # must not raise
+    assert isinstance(parsed, dict)
+
+
+def test_render_report_json_top_level_keys(capsys):
+    render_report_json(_make_grouped(), parse_all_policies(POLICY_HOT_30GB),
+                       skipped=0, profiles=[_make_ds_profile()], data_node_count=5)
+    parsed = json.loads(capsys.readouterr().out)
+    assert "generated_at" in parsed
+    assert "summary" in parsed
+    assert "policies" in parsed
+    assert "recommendations" in parsed
+
+
+def test_render_report_json_summary_counts(capsys):
+    grouped = _make_grouped()
+    policies = parse_all_policies(POLICY_HOT_30GB)
+    render_report_json(grouped, policies, skipped=3, profiles=[_make_ds_profile()], data_node_count=7)
+    parsed = json.loads(capsys.readouterr().out)
+    summary = parsed["summary"]
+    assert summary["policy_count"] == 1
+    assert summary["managed_index_count"] == 1
+    assert summary["data_node_count"] == 7
+    assert summary["skipped_index_count"] == 3
+
+
+def test_render_report_json_index_fields(capsys):
+    render_report_json(_make_grouped(), parse_all_policies(POLICY_HOT_30GB),
+                       skipped=0, profiles=[_make_ds_profile()], data_node_count=5)
+    parsed = json.loads(capsys.readouterr().out)
+    index = parsed["policies"][0]["indices"][0]
+    assert index["name"] == ".ds-logs-app-000001"
+    assert index["phase"] == "hot"
+    assert isinstance(index["index_age_days"], float)
+    assert isinstance(index["phase_age_days"], float)
+    assert index["docs"] == 1_000_000
+    assert index["size_bytes"] == 10 * 1024**3
+    assert isinstance(index["size_human"], str)
+    assert index["primary_shards"] == 2
+    assert isinstance(index["shard_size_bytes"], int)
+    assert isinstance(index["shard_size_human"], str)
+    assert index["health"] == "green"
+    assert index["status"] == "open"
+    assert index["is_write_index"] is False
+    assert index["data_stream"] == "logs-app"
+
+
+def test_render_report_json_policy_totals(capsys):
+    render_report_json(_make_grouped(), parse_all_policies(POLICY_HOT_30GB),
+                       skipped=0, profiles=[_make_ds_profile()], data_node_count=5)
+    parsed = json.loads(capsys.readouterr().out)
+    policy = parsed["policies"][0]
+    assert policy["name"] == "logs-default"
+    assert policy["index_count"] == 1
+    assert policy["total_docs"] == 1_000_000
+    assert policy["total_size_bytes"] == 10 * 1024**3
+    assert isinstance(policy["total_size_human"], str)
+
+
+def test_render_report_json_recommendation_fields(capsys):
+    profiles = [_make_ds_profile(recommendation="OK", detail=None)]
+    render_report_json(_make_grouped(), parse_all_policies(POLICY_HOT_30GB),
+                       skipped=0, profiles=profiles, data_node_count=5)
+    parsed = json.loads(capsys.readouterr().out)
+    rec = parsed["recommendations"][0]
+    assert rec["name"] == "logs-app"
+    assert rec["template"] == "logs-app-default"
+    assert rec["policy"] == "logs-default"
+    assert rec["recommendation"] == "OK"
+    assert rec["detail"] is None
+    assert isinstance(rec["avg_rotation_hours"], float)
+    assert isinstance(rec["avg_shard_size_bytes"], int)
+    assert isinstance(rec["avg_shard_size_human"], str)
+    assert rec["max_shard_size_configured"] == "30gb"
+    assert rec["primary_shards"] == 2
+
+
+def test_render_report_json_nulls_when_insufficient_history(capsys):
+    profiles = [_make_ds_profile(
+        avg_rotation_hours=None,
+        avg_shard_size_bytes=None,
+        max_shard_size_str=None,
+        recommendation="insufficient history",
+        detail="need ≥ 2 rolled-over indices to compute cadence",
+    )]
+    render_report_json(_make_grouped(), parse_all_policies(POLICY_HOT_30GB),
+                       skipped=0, profiles=profiles, data_node_count=5)
+    parsed = json.loads(capsys.readouterr().out)
+    rec = parsed["recommendations"][0]
+    assert rec["avg_rotation_hours"] is None
+    assert rec["avg_shard_size_bytes"] is None
+    assert rec["avg_shard_size_human"] is None
+    assert rec["detail"] == "need ≥ 2 rolled-over indices to compute cadence"
+
+
+def test_render_report_json_age_days_rounded(capsys):
+    """index_age_days and phase_age_days should be rounded to 2 decimal places."""
+    from slopbox_domain.es.models import IndexProfile
+    p = IndexProfile(
+        name=".ds-logs-app-000001",
+        policy="logs-default",
+        phase="hot",
+        index_age_days=2.123456789,
+        phase_age_days=1.987654321,
+        docs=0,
+        size_bytes=0,
+        primary_shards=1,
+        is_write_index=False,
+        data_stream="logs-app",
+        creation_epoch_ms=1_700_000_000_000,
+        health="green",
+        status="open",
+    )
+    grouped = {"logs-default": [p]}
+    render_report_json(grouped, parse_all_policies(POLICY_HOT_30GB),
+                       skipped=0, profiles=[_make_ds_profile()], data_node_count=5)
+    parsed = json.loads(capsys.readouterr().out)
+    index = parsed["policies"][0]["indices"][0]
+    assert index["index_age_days"] == 2.12
+    assert index["phase_age_days"] == 1.99
+
+
+def test_render_report_json_output_goes_to_stdout_not_stderr(capsys):
+    render_report_json(_make_grouped(), parse_all_policies(POLICY_HOT_30GB),
+                       skipped=0, profiles=[_make_ds_profile()], data_node_count=5)
+    captured = capsys.readouterr()
+    assert captured.out.strip()      # stdout has content
+    assert not captured.err.strip()  # nothing on stderr
