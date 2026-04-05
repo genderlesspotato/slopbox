@@ -1,21 +1,5 @@
-[project]
-name = "slopbox"
-version = "0.1.0"
-description = "Collection of Elasticsearch and ops tooling"
-requires-python = ">=3.11"
-dependencies = [
-    "elasticsearch>=8.0.0",
-    "pydantic>=2.0",
-    "rich>=13.0.0",
-]
-
-[tool.uv]
-package = false
-
-[dependency-groups]
-dev = [
-    "pytest>=8.0.0",
-]
+[tool.uv.workspace]
+members = ["packages/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["packages/tools/tests"]

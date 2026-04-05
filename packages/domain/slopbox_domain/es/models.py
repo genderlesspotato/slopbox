@@ -9,7 +9,7 @@ attributes.
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
-from slopbox.formatting import format_bytes, format_duration
+from slopbox_domain.formatting import format_bytes, format_duration
 
 
 class IndexProfile(BaseModel):

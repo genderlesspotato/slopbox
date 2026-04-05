@@ -1,0 +1,18 @@
+[project]
+name = "slopbox-tools"
+version = "0.1.0"
+description = "Elasticsearch and Kubernetes ops CLI tools"
+requires-python = ">=3.11"
+dependencies = [
+    "elasticsearch>=8.0.0",
+    "rich>=13.0.0",
+    "slopbox-domain",
+]
+
+[tool.uv.sources]
+slopbox-domain = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
