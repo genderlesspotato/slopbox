@@ -1,5 +1,7 @@
 """Unit tests for slopbox.client.build_client()."""
 
+import logging
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -31,27 +33,33 @@ def _env(**overrides):
 # Validation — missing connection settings
 # ---------------------------------------------------------------------------
 
-def test_build_client_exits_without_host_or_cloud_id(monkeypatch):
+def test_build_client_exits_without_host_or_cloud_id(monkeypatch, caplog):
     monkeypatch.delenv("ES_HOST", raising=False)
     monkeypatch.delenv("ES_CLOUD_ID", raising=False)
     monkeypatch.delenv("ES_API_KEY", raising=False)
     monkeypatch.delenv("ES_USERNAME", raising=False)
     monkeypatch.delenv("ES_PASSWORD", raising=False)
-    with pytest.raises(SystemExit, match="ES_HOST or ES_CLOUD_ID"):
-        build_client()
+    with caplog.at_level(logging.ERROR, logger="slopbox.client"):
+        with pytest.raises(SystemExit) as exc_info:
+            build_client()
+    assert exc_info.value.code == 1
+    assert "ES_HOST or ES_CLOUD_ID" in caplog.text
 
 
 # ---------------------------------------------------------------------------
 # Validation — missing auth
 # ---------------------------------------------------------------------------
 
-def test_build_client_exits_without_any_auth(monkeypatch):
+def test_build_client_exits_without_any_auth(monkeypatch, caplog):
     monkeypatch.setenv("ES_HOST", "https://localhost:9200")
     monkeypatch.delenv("ES_API_KEY", raising=False)
     monkeypatch.delenv("ES_USERNAME", raising=False)
     monkeypatch.delenv("ES_PASSWORD", raising=False)
-    with pytest.raises(SystemExit, match="ES_API_KEY or both ES_USERNAME and ES_PASSWORD"):
-        build_client()
+    with caplog.at_level(logging.ERROR, logger="slopbox.client"):
+        with pytest.raises(SystemExit) as exc_info:
+            build_client()
+    assert exc_info.value.code == 1
+    assert "ES_API_KEY or both ES_USERNAME and ES_PASSWORD" in caplog.text
 
 
 def test_build_client_exits_with_username_only(monkeypatch):

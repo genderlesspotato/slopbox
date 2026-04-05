@@ -1,9 +1,12 @@
 """Elasticsearch client construction from environment variables."""
 
+import logging
 import os
 import sys
 
 from elasticsearch import Elasticsearch
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -18,9 +21,11 @@ def build_client() -> Elasticsearch:
     password = os.environ.get("ES_PASSWORD")
 
     if not host and not cloud_id:
-        sys.exit("ERROR: ES_HOST or ES_CLOUD_ID must be set")
+        logger.error("ES_HOST or ES_CLOUD_ID must be set")
+        sys.exit(1)
     if not api_key and not (username and password):
-        sys.exit("ERROR: ES_API_KEY or both ES_USERNAME and ES_PASSWORD must be set")
+        logger.error("ES_API_KEY or both ES_USERNAME and ES_PASSWORD must be set")
+        sys.exit(1)
 
     kwargs: dict = {}
 
