@@ -29,6 +29,12 @@ After `direnv allow`, re-entering the directory in any future shell automaticall
 
 ### Environment Variables
 
+**Output:**
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `LOG_FORMAT` | Optional | `human` (default) for Rich terminal output; `json` for newline-delimited JSON logs to stderr + JSON report to stdout |
+
 **Elasticsearch:**
 
 | Variable | Required | Notes |
@@ -65,6 +71,44 @@ No CLI arguments — all configuration comes from environment variables.
 
 ---
 
+## Output Modes
+
+Tools support two output modes via `LOG_FORMAT`:
+
+| `LOG_FORMAT` | Behavior |
+|---|---|
+| (unset or `human`) | Rich terminal output — spinners during fetch, formatted tables for the report |
+| `json` | JSON log records to stderr for progress/errors; single JSON document to stdout for the report |
+
+`json` mode is designed for k8s and Temporal workflows where downstream systems need to parse the report programmatically or log aggregators (Loki, Datadog, etc.) need structured records.
+
+```bash
+# Human mode (default):
+python ilm_review.py
+
+# JSON mode — capture report separately from operational logs:
+LOG_FORMAT=json python ilm_review.py > report.json 2> ops.jsonl
+```
+
+### Logging architecture
+
+All logging is configured by `slopbox/logging.py`:
+
+- `get_log_format()` — reads `LOG_FORMAT`, returns `"human"` or `"json"`
+- `configure_logging(format=None)` — configures the root Python logger and returns the active format; call once at the top of `main()` before any other output or `build_client()` calls
+- Human mode: `RichHandler` (integrates cleanly with Rich console output)
+- JSON mode: `StreamHandler(stderr)` with `_JsonFormatter` — each record is a JSON object with `timestamp` (ISO-8601 UTC), `level`, `logger`, and `message`
+
+The root logger is set to `WARNING` so third-party libraries (elasticsearch-py, urllib3) stay quiet. The `slopbox` and `ilm_review` logger hierarchies are set to `INFO`.
+
+Tool scripts use a named logger rather than `__name__` to avoid the `"__main__"` hierarchy when run as scripts:
+
+```python
+logger = logging.getLogger("ilm_review")  # explicit, not __name__
+```
+
+---
+
 ## Running Tests
 
 ```bash
@@ -77,7 +121,7 @@ uv run --group dev pytest
 
 Tests live in `tests/` and use static mock data shaped after real ES 7.x and 8.x API responses. **No running cluster is required.**
 
-Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for determinism. Tests for shared utilities live in `tests/test_formatting.py` and `tests/test_client.py`.
+Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for determinism. Tests for shared utilities live in `tests/test_formatting.py`, `tests/test_client.py`, and `tests/test_logging.py`.
 
 ---
 
@@ -86,15 +130,17 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 | File | Role |
 |------|------|
 | `ilm_review.py` | ILM review tool |
-| `slopbox/formatting.py` | Shared formatting utilities: `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/client.py` | Shared Elasticsearch client factory: `build_client()` |
+| `slopbox/formatting.py` | Shared formatting utilities: `format_bytes`, `format_duration`, `phase_style`, `health_style` |
+| `slopbox/logging.py` | Shared logging configuration: `get_log_format()`, `configure_logging()` |
 | `domain/es/models.py` | ES domain objects (`IndexProfile`, …) — Pydantic v2 with `@computed_field` display strings |
 | `domain/es/types.py` | Raw ES API boundary models (`RawCatIndexEntry`, `RawIlmExplainEntry`, …) — owns all string→int coercion |
 | `domain/k8s/models.py` | k8s domain objects (`PodProfile`, …) — constructed via classmethods from k8s client objects |
-| `tests/test_ilm_review.py` | ILM tool unit tests — 49+ cases including full profiling suite |
+| `tests/test_ilm_review.py` | ILM tool unit tests — 58+ cases including full profiling and JSON report suite |
 | `tests/test_domain_es.py` | Boundary coercion + domain model tests |
 | `tests/test_formatting.py` | Formatter helper tests |
 | `tests/test_client.py` | Unit tests for `slopbox.client` |
+| `tests/test_logging.py` | Unit tests for `slopbox.logging` |
 | `pyproject.toml` | Project metadata, dependencies, pytest config |
 | `uv.lock` | Pinned dependency tree (committed intentionally) |
 | `.envrc` | direnv: loads `.env`, activates uv venv via `layout uv` |
@@ -108,14 +154,16 @@ Utilities shared across tools live in the `slopbox/` package:
 
 | Module | Contents |
 |--------|----------|
-| `slopbox/formatting.py` | `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/client.py` | `build_client()` — env var validation + Elasticsearch client construction |
+| `slopbox/formatting.py` | `format_bytes`, `format_duration`, `phase_style`, `health_style` |
+| `slopbox/logging.py` | `configure_logging()`, `get_log_format()` — human/JSON output mode |
 
 Import them directly in any tool:
 
 ```python
 from slopbox.client import build_client
 from slopbox.formatting import format_bytes, format_duration, phase_style, health_style
+from slopbox.logging import configure_logging
 ```
 
 ---
@@ -196,8 +244,9 @@ Key components:
 | `correlate_data()` | Joins ILM explain + cat stats + data stream membership via domain boundary types; groups by policy |
 | `profile_data_streams()` | Computes per-data-stream rotation cadence; emits `DataStreamProfile` with recommendation |
 | `_recommend()` | Stateless recommendation ladder: shard size → shard count → SPLIT |
-| `render_report()` | Builds and prints inventory table + recommendations table |
-| `main()` | Orchestrates everything, top-level error handling |
+| `render_report()` | Builds and prints Rich inventory table + recommendations table (human mode) |
+| `render_report_json()` | Emits the full report as a single JSON document to stdout (json mode) |
+| `main()` | Calls `configure_logging()`, orchestrates everything, top-level error handling |
 
 Both ES 7.x and 8.x response shapes are supported throughout.
 
@@ -241,7 +290,15 @@ Constants `TARGET_MIN_HOURS`, `TARGET_MAX_HOURS`, `MAX_SHARD_BYTES`, and
 - **Full type annotations** on all functions and model fields
 - **Section-header comment blocks** (60-char separator lines) group related functions — maintain this pattern
 - **Pure functions** with minimal side effects; no global mutable state
-- **Rich** for all terminal output: `Console`, `Table`, `box.SIMPLE_HEAD`, `console.rule()`, `console.status()`
+- **Rich** for all terminal output in human mode: `Console`, `Table`, `box.SIMPLE_HEAD`, `console.rule()`, `console.status()`
+
+### Logging
+- Call `configure_logging()` once at the top of `main()` before any output or `build_client()` calls
+- Use `logger = logging.getLogger("tool_name")` (named explicitly, not `__name__`) at module level
+- Progress/status messages → `logger.info()`; errors → `logger.error()` followed by `sys.exit(1)`
+- In human mode, use `console.status()` spinners for fetch operations (not `logger.info`)
+- In json mode, use `logger.info()` for all progress messages
+- Never use `sys.exit("ERROR: message")` — use `logger.error(...)` + `sys.exit(1)` so errors route through the configured handler
 
 ### Domain Modeling
 - **Pydantic v2** for all domain objects (`BaseModel`, `ConfigDict(frozen=True)`)
@@ -251,13 +308,15 @@ Constants `TARGET_MIN_HOURS`, `TARGET_MAX_HOURS`, `MAX_SHARD_BYTES`, and
 
 ### Error Handling
 - Catch specific exceptions: `AuthenticationException`, `ConnectionError`, `TransportError`
-- Call `sys.exit()` with a clear user-facing message; don't re-raise
+- Log with `logger.error(...)` and call `sys.exit(1)`; don't re-raise
 - Validate only at system boundaries (env var parsing, API responses) — trust internal code
 
 ### Testing
 - Use `@pytest.mark.parametrize` for edge cases
 - Mock Elasticsearch responses as realistic dicts matching actual API shapes
 - Patch `ilm_review.time.time` for any time-dependent logic
+- Use `capsys` to test JSON report output (`render_report_json`)
+- Use `caplog` to assert log messages from `logger.error()` / `logger.info()` calls
 - Test names should be descriptive: `test_correlate_data_missing_cat_entry_increments_skipped`
 
 ---
@@ -265,10 +324,29 @@ Constants `TARGET_MIN_HOURS`, `TARGET_MAX_HOURS`, `MAX_SHARD_BYTES`, and
 ## Adding a New Tool
 
 1. Drop the script at the repo root: `my_tool.py`
-2. Import shared utilities from `slopbox.*` as needed (client, formatting)
-3. Add any new dependencies to `[project.dependencies]` in `pyproject.toml`
-4. Run `uv lock && uv sync` (or re-enter the directory so direnv triggers sync)
-5. Add tests under `tests/`; extract new shared utilities to `slopbox/` if they'll be reused
+2. Call `configure_logging()` at the top of `main()` and set up a named logger
+3. Import shared utilities from `slopbox.*` as needed (client, formatting, logging)
+4. Add any new dependencies to `[project.dependencies]` in `pyproject.toml`
+5. Run `uv lock && uv sync` (or re-enter the directory so direnv triggers sync)
+6. Add tests under `tests/`; extract new shared utilities to `slopbox/` if they'll be reused
+
+**Logging pattern:**
+
+```python
+import logging
+from slopbox.logging import configure_logging
+
+logger = logging.getLogger("my_tool")  # explicit name, not __name__
+
+def main() -> None:
+    log_format = configure_logging()
+    console = Console() if log_format == "human" else None
+    ...
+    if log_format == "human":
+        render_report(console, ...)
+    else:
+        render_report_json(...)
+```
 
 **Domain objects:**
 - If the tool introduces new domain objects, add them under `domain/<system>/models.py`
