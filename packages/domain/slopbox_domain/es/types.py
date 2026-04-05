@@ -16,10 +16,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # ---------------------------------------------------------------------------
 
 class RawPhaseExecution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     modified_date_in_millis: int | None = None
 
 
 class RawIlmExplainEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     index: str
     policy: str = "unknown"
     phase: str = "unknown"
@@ -32,7 +36,7 @@ class RawIlmExplainEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 class RawCatIndexEntry(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     index: str
     docs_count: int = Field(alias="docs.count", default=0)
@@ -44,7 +48,7 @@ class RawCatIndexEntry(BaseModel):
 
     @field_validator("docs_count", "store_size_bytes", "creation_epoch_ms", "primary_shards", mode="before")
     @classmethod
-    def coerce_str_to_int(cls, v: object) -> int:
+    def coerce_str_to_int(cls, v: str | int | None) -> int:
         return 0 if v is None else int(v)
 
 
@@ -53,11 +57,15 @@ class RawCatIndexEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 class RawDataStreamIndex(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     index_name: str
     index_uuid: str
 
 
 class RawDataStream(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     template: str = "unknown"
     indices: list[RawDataStreamIndex] = Field(default_factory=list)
