@@ -22,7 +22,7 @@ from ilm_review import (
     TARGET_MAX_HOURS,
     MAX_SHARD_BYTES,
 )
-from domain.es.types import RawDataStream
+from slopbox_domain.es.types import RawDataStream
 
 
 # ---------------------------------------------------------------------------
@@ -616,7 +616,7 @@ def _make_test_profile(
     data_stream: str | None = "logs-app",
     policy: str = "logs-default",
 ) -> "IndexProfile":
-    from domain.es.models import IndexProfile
+    from slopbox_domain.es.models import IndexProfile
     return IndexProfile(
         name=name,
         policy=policy,

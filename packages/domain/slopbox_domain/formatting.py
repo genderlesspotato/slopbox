@@ -1,4 +1,4 @@
-"""Shared formatting utilities for slopbox tools."""
+"""Shared formatting utilities for slopbox domain objects and tools."""
 
 
 # ---------------------------------------------------------------------------

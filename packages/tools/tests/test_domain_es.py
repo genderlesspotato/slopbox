@@ -2,14 +2,14 @@
 
 import pytest
 
-from domain.es.types import (
+from slopbox_domain.es.types import (
     RawCatIndexEntry,
     RawIlmExplainEntry,
     RawPhaseExecution,
     RawDataStream,
     RawDataStreamIndex,
 )
-from domain.es.models import IndexProfile
+from slopbox_domain.es.models import IndexProfile
 
 
 # ---------------------------------------------------------------------------

@@ -28,8 +28,8 @@ from rich import box
 from slopbox.client import build_client
 from slopbox.formatting import format_bytes, format_duration, phase_style, health_style
 
-from domain.es.models import IndexProfile
-from domain.es.types import RawCatIndexEntry, RawIlmExplainEntry, RawDataStream
+from slopbox_domain.es.models import IndexProfile
+from slopbox_domain.es.types import RawCatIndexEntry, RawIlmExplainEntry, RawDataStream
 
 
 # ---------------------------------------------------------------------------

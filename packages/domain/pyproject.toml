@@ -1,0 +1,8 @@
+[project]
+name = "slopbox-domain"
+version = "0.1.0"
+description = "Shared typed data contracts for slopbox tools and workflows"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+]
