@@ -35,6 +35,7 @@ After `direnv allow`, re-entering the directory in any future shell automaticall
 | Variable | Required | Notes |
 |----------|----------|-------|
 | `LOG_FORMAT` | Optional | `human` (default) for Rich terminal output; `json` for newline-delimited JSON logs to stderr + JSON report to stdout |
+| `DRY_RUN` | Optional | `true` (default) skips all mutations; set to `false` to enable writes. Only relevant for tools that perform mutations. |
 
 **Elasticsearch:**
 
@@ -68,7 +69,7 @@ python ilm_review.py
 uv run python ilm_review.py
 ```
 
-No CLI arguments — all configuration comes from environment variables.
+Configuration comes from environment variables. Tools may also accept CLI arguments that override env vars — see each tool's documentation.
 
 ---
 
@@ -364,12 +365,67 @@ external coordination or database is needed.
 - **Rich** for all terminal output in human mode: `Console`, `Table`, `box.SIMPLE_HEAD`, `console.rule()`, `console.status()`
 
 ### Logging
+
+**Mechanics:**
 - Call `configure_logging()` once at the top of `main()` before any output or `build_client()` calls
 - Use `logger = logging.getLogger("tool_name")` (named explicitly, not `__name__`) at module level
-- Progress/status messages → `logger.info()`; errors → `logger.error()` followed by `sys.exit(1)`
 - In human mode, use `console.status()` spinners for fetch operations (not `logger.info`)
 - In json mode, use `logger.info()` for all progress messages
 - Never use `sys.exit("ERROR: message")` — use `logger.error(...)` + `sys.exit(1)` so errors route through the configured handler
+
+**What to log — operational signal:**
+- Every significant state transition: tool start/end, connection established, config resolved, scan cycle begin/end
+- Counts and summaries after bulk operations: `"found 3 dangling candidates, 12 skipped"` — not a dump of each item
+- Errors and warnings with enough context to act on: uuid, path, error message, relevant config value
+- Degraded-mode fallbacks: e.g. `"ES JVM not found in /proc; open-FD check skipped"`
+- Dry-run mode at startup and on each skipped mutation (see Dry-Run Mode below)
+
+**What NOT to log at INFO or above:**
+- Raw API response payloads — a cluster state for a large cluster can be hundreds of KB
+- Per-item traces when iterating thousands of indices or shards: `"processing index foo-000001"` × 50 000 is noise
+- Anything that scales linearly with cluster size and carries no actionable signal
+
+**Scale awareness:**
+- In json mode every INFO line is shipped to a log aggregator (Loki, Datadog, etc.). A single serialised cluster-state object for a 500-node cluster can be megabytes — this breaks log shippers and inflates ingestion costs.
+- Large structures needed for debugging belong behind `logger.debug(...)`. The root logger is set to WARNING; slopbox tool loggers are set to INFO — DEBUG lines are never emitted in production unless a caller explicitly lowers the level.
+- Prefer structured summary fields over embedded blobs: `"live_indices=4200 graveyard_entries=37"` rather than the raw dict.
+
+**Log levels:**
+
+| Level | When to use |
+|-------|-------------|
+| `INFO` | Normal operational progress an operator monitoring a workflow cares about |
+| `WARNING` | Degraded or unexpected but recoverable: skipped safety check, missing optional field, fallback activated |
+| `ERROR` | Operation failed; tool will exit or skip a safety-critical step |
+| `DEBUG` | Per-item traces, large structure dumps — off by default, never emitted in production |
+
+### Dry-Run Mode
+
+Any tool that performs **costly, irreversible, or destructive operations** (filesystem mutations, index deletion, shard moves, policy writes, etc.) **must** implement a dry-run mode.
+
+**Convention — consistent across all tools:**
+
+| Aspect | Rule |
+|--------|------|
+| Env var | `DRY_RUN` |
+| CLI flag | `--dry-run` / `--no-dry-run` (if the tool has CLI arg parsing; overrides the env var) |
+| Default | `true` — safe by default; mutations only when explicitly opted in |
+| Parse pattern | `os.getenv("DRY_RUN", "true").lower() != "false"` |
+| Startup log | `logger.info("running in dry-run mode (set DRY_RUN=false to enable mutations)")` |
+| Mutation log prefix | `[dry-run]` on every would-be mutation line |
+| Behaviour | Fetch, parse, and evaluate as normal — skip all writes, renames, and deletes |
+
+The env var is the primary mechanism for containerised and workflow deployments. CLI flags (when present) take precedence and are useful for interactive use.
+
+**Pattern (from `dangling_index_scanner.py`):**
+
+```python
+if dry_run:
+    logger.info("[dry-run] would quarantine %s → %s", src, dst)
+else:
+    src.rename(dst)
+    logger.info("quarantined %s → %s", src, dst)
+```
 
 ### Domain Modeling
 - **Pydantic v2** for all domain objects (`BaseModel`, `ConfigDict(frozen=True)`)
@@ -400,6 +456,7 @@ external coordination or database is needed.
 4. Add any new dependencies to `[project.dependencies]` in `pyproject.toml`
 5. Run `uv lock && uv sync` (or re-enter the directory so direnv triggers sync)
 6. Add tests under `tests/`; extract new shared utilities to `slopbox/` if they'll be reused
+7. If the tool performs any mutation (filesystem, index, policy, k8s resource, etc.), implement dry-run following the **Dry-Run Mode** convention above
 
 **Logging pattern:**
 
