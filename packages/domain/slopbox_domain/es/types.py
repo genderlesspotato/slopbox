@@ -16,13 +16,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # ---------------------------------------------------------------------------
 
 class RawPhaseExecution(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # The ILM explain API returns many extra fields (policy, version, etc.).
+    # extra="ignore" keeps this robust to API evolution.
+    model_config = ConfigDict(extra="ignore")
 
     modified_date_in_millis: int | None = None
 
 
 class RawIlmExplainEntry(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # The ILM explain API returns many extra fields (managed, action, step, etc.).
+    # extra="ignore" keeps this robust to API evolution.
+    model_config = ConfigDict(extra="ignore")
 
     index: str
     policy: str = "unknown"
@@ -69,3 +73,17 @@ class RawDataStream(BaseModel):
     name: str
     template: str = "unknown"
     indices: list[RawDataStreamIndex] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# _cat/recovery response shapes
+# ---------------------------------------------------------------------------
+
+class RawCatRecoveryEntry(BaseModel):
+    # _cat/recovery returns many fields; we only need `index` to cross-reference
+    # with the cluster state.  extra="ignore" keeps this robust to API evolution.
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    index: str
+    shard: str = "0"
+    stage: str = "unknown"

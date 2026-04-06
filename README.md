@@ -7,6 +7,51 @@ Python script sharing a common project environment.
 
 ## Tools
 
+### `dangling_index_scanner.py` — Dangling Index Scanner
+
+Scans an Elasticsearch data node's `indices/` directory for UUID directories
+that the cluster no longer recognises, **quarantines** them safely, and **reaps**
+quarantine entries after a second grace period. Default mode is dry-run.
+
+Makes **2 API calls** per scan cycle:
+
+| Call | Purpose |
+|------|---------|
+| `GET /_cluster/state/metadata` | Fetch all live index UUIDs and graveyard tombstones |
+| `GET /_cat/recovery?active_only=true` | Check for in-progress shard recoveries (belt-and-suspenders) |
+
+A directory is a dangling candidate only when **all** of the following hold:
+it is not in the live cluster state, not in the index graveyard, lacks a
+`_state` subdirectory, is older than `ORPHAN_AGE_HOURS` by ctime, is not
+targeted by an active recovery, and the ES JVM holds no open file descriptors
+under it (Linux/`/proc` only).
+
+Reclamation is two-phase: an atomic `rename(2)` into `.quarantine/` (Phase 1),
+followed by permanent deletion once the quarantine entry is old enough and a
+fresh cluster state re-confirms the UUID is still absent (Phase 2).
+
+| Environment variable | Default | Description |
+|----------------------|---------|-------------|
+| `ES_DATA_PATH` | *(required)* | Path to the ES data directory |
+| `DRY_RUN` | `true` | Set to `false` to enable filesystem mutations |
+| `ORPHAN_AGE_HOURS` | `24` | Minimum ctime age before a dir is a candidate |
+| `QUARANTINE_GRACE_HOURS` | `48` | Minimum quarantine age before reaping |
+| `SCAN_INTERVAL_SECONDS` | `3600` | Sleep between iterations in daemon mode |
+| `DAEMON` | `false` | `true` → loop forever; `false` → single run |
+
+```bash
+# Dry-run single scan (safe default):
+ES_DATA_PATH=/var/lib/elasticsearch/data python dangling_index_scanner.py
+
+# JSON mode — capture report separately from logs:
+LOG_FORMAT=json ES_DATA_PATH=... python dangling_index_scanner.py > report.json 2> ops.jsonl
+
+# Enable mutations only after validating dry-run output:
+DRY_RUN=false ES_DATA_PATH=... python dangling_index_scanner.py
+```
+
+---
+
 ### `ilm_review.py` — ILM Policy Reviewer
 
 Inventories all ILM-managed indices grouped by policy, profiles the rotation

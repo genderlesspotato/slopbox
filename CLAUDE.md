@@ -9,6 +9,7 @@
 | Script | Purpose |
 |--------|---------|
 | `ilm_review.py` | Inventories ILM-managed indices grouped by policy and emits per-data-stream recommendations to tune ILM policy and index template settings |
+| `dangling_index_scanner.py` | Scans an ES data node's `indices/` directory for UUID directories the cluster no longer recognises; quarantines and reaps them with layered safety checks |
 
 **Runtime:** Python 3.11+, managed by [uv](https://docs.astral.sh/uv/).
 
@@ -130,13 +131,15 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 | File | Role |
 |------|------|
 | `ilm_review.py` | ILM review tool |
+| `dangling_index_scanner.py` | Dangling index scanner and reclaimer |
 | `slopbox/client.py` | Shared Elasticsearch client factory: `build_client()` |
 | `slopbox/formatting.py` | Shared formatting utilities: `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | Shared logging configuration: `get_log_format()`, `configure_logging()` |
 | `domain/es/models.py` | ES domain objects (`IndexProfile`, …) — Pydantic v2 with `@computed_field` display strings |
-| `domain/es/types.py` | Raw ES API boundary models (`RawCatIndexEntry`, `RawIlmExplainEntry`, …) — owns all string→int coercion |
+| `domain/es/types.py` | Raw ES API boundary models (`RawCatIndexEntry`, `RawIlmExplainEntry`, `RawCatRecoveryEntry`, …) — owns all string→int coercion |
 | `domain/k8s/models.py` | k8s domain objects (`PodProfile`, …) — constructed via classmethods from k8s client objects |
 | `tests/test_ilm_review.py` | ILM tool unit tests — 58+ cases including full profiling and JSON report suite |
+| `tests/test_dangling_index_scanner.py` | Dangling scanner unit tests — filesystem, cluster-state parsing, quarantine/reap logic, JSON report |
 | `tests/test_domain_es.py` | Boundary coercion + domain model tests |
 | `tests/test_formatting.py` | Formatter helper tests |
 | `tests/test_client.py` | Unit tests for `slopbox.client` |
@@ -278,6 +281,74 @@ Constants `TARGET_MIN_HOURS`, `TARGET_MAX_HOURS`, `MAX_SHARD_BYTES`, and
 
 ---
 
+## Architecture of `dangling_index_scanner.py`
+
+The tool makes **2 API calls** per scan cycle (plus one additional cluster
+state fetch per aged quarantine entry during the reap pass):
+
+```
+fetch_cluster_state()       →  GET /_cluster/state/metadata
+fetch_active_recoveries()   →  GET /_cat/recovery?active_only=true
+```
+
+Data flows through a scan-quarantine-reap pipeline:
+
+```
+fetch → parse_known_uuids → scan_for_candidates → quarantine → reap
+```
+
+Key components:
+
+| Component | Role |
+|-----------|------|
+| `fetch_cluster_state()` | Fetches full cluster metadata: live index UUIDs + graveyard tombstones |
+| `fetch_active_recoveries()` | Fetches in-progress shard recoveries as `RawCatRecoveryEntry` objects |
+| `parse_known_uuids()` | Extracts `(live_uuids, graveyard_uuids)` from cluster state dict |
+| `parse_recovery_uuids()` | Maps recovery index names → UUIDs via the cluster state |
+| `find_indices_dir()` | Locates the `indices/` path; handles both ES 7.x and 8.x layouts |
+| `find_es_pid()` | Finds the ES JVM PID via `/proc/*/cmdline`; returns `None` on non-Linux |
+| `has_open_fds()` | Checks `/proc/<pid>/fd` for open descriptors under a path; fails safe |
+| `scan_for_candidates()` | Walks `indices/`, applies all 7 safety checks, returns `DanglingCandidate` list |
+| `quarantine_candidate()` | Atomically renames a candidate into `.quarantine/` |
+| `reap_quarantine()` | Reaps aged quarantine entries; restores any that reappear in cluster state |
+| `run_scan()` | Orchestrates one full scan-quarantine-reap cycle; returns `ScanResult` |
+| `render_report()` | Rich table output (human mode) |
+| `render_report_json()` | Single JSON document to stdout (json mode) |
+| `main()` | Reads env, calls `configure_logging()`, loops in daemon mode or runs once |
+
+### Safety checks in `scan_for_candidates()`
+
+Every candidate must pass **all** of the following; failure on any check skips
+the candidate (never quarantines):
+
+1. Name matches ES UUID pattern (alphanumeric + `_-`, ≥ 10 chars)
+2. No `_state` subdirectory (rules out in-flight allocations)
+3. UUID not in live cluster state
+4. UUID not in index graveyard
+5. UUID not targeted by an active shard recovery
+6. ctime older than `ORPHAN_AGE_HOURS`
+7. ES JVM holds no open file descriptors under the directory (Linux only)
+
+If the cluster state or recovery API cannot be fetched, the entire scan cycle
+is aborted — the tool always fails closed on uncertainty.
+
+### Quarantine folder naming
+
+Quarantine entries are named `<uuid>__<epoch_seconds>`. The epoch is parsed
+during the reap pass to determine age — the filesystem is the state store, no
+external coordination or database is needed.
+
+### ES data directory layouts
+
+| Layout | Path |
+|--------|------|
+| ES 8.x | `$ES_DATA_PATH/indices/` |
+| ES 7.x | `$ES_DATA_PATH/nodes/0/indices/` |
+
+`find_indices_dir()` tries the 8.x path first.
+
+---
+
 ## Code Conventions
 
 ### Naming
@@ -314,7 +385,7 @@ Constants `TARGET_MIN_HOURS`, `TARGET_MAX_HOURS`, `MAX_SHARD_BYTES`, and
 ### Testing
 - Use `@pytest.mark.parametrize` for edge cases
 - Mock Elasticsearch responses as realistic dicts matching actual API shapes
-- Patch `ilm_review.time.time` for any time-dependent logic
+- Patch `<tool_module>.time.time` for any time-dependent logic (e.g. `ilm_review.time.time`, `dangling_index_scanner.time.time`)
 - Use `capsys` to test JSON report output (`render_report_json`)
 - Use `caplog` to assert log messages from `logger.error()` / `logger.info()` calls
 - Test names should be descriptive: `test_correlate_data_missing_cat_entry_increments_skipped`
