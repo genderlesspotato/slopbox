@@ -14,13 +14,15 @@ rollover criteria alongside current phase, age, document count, and store size.
 Useful for spotting indices that are rolling over too frequently or not often
 enough.
 
-Makes exactly **3 API calls**:
+Makes exactly **5 API calls**:
 
 | Call | Purpose |
 |------|---------|
 | `GET /_ilm/policy` | Fetch all ILM policies and their rollover thresholds |
 | `GET /*/_ilm/explain?only_managed=true` | Fetch lifecycle state for every managed index |
-| `GET /_cat/indices?bytes=b` | Fetch current doc counts, store sizes, and creation timestamps |
+| `GET /_cat/indices?bytes=b` | Fetch current doc counts, store sizes, shard counts, and creation timestamps |
+| `GET /_cat/nodes?h=node.role` | Count data-role nodes for shard spread calculations |
+| `GET /_data_stream/*` | Fetch template names and backing index lists per data stream |
 
 #### Sample output
 
@@ -99,6 +101,7 @@ uv run python ilm_review.py
 
 | Variable | Required | Description |
 |----------|----------|-------------|
+| `LOG_FORMAT` | Optional | Output mode: `human` (default) for Rich terminal output, `json` for machine-readable JSON |
 | `ES_HOST` | Yes (unless `ES_CLOUD_ID`) | Full cluster URL, e.g. `https://localhost:9200` |
 | `ES_CLOUD_ID` | Optional | Elastic Cloud ID — overrides `ES_HOST` |
 | `ES_API_KEY` | Optional* | API key string (base64 `id:key`) |
@@ -107,6 +110,20 @@ uv run python ilm_review.py
 
 \* Either `ES_API_KEY` **or** both `ES_USERNAME` + `ES_PASSWORD` must be set.
 API key takes precedence if both are provided.
+
+### JSON mode
+
+Set `LOG_FORMAT=json` to get machine-readable output — useful for k8s jobs, Temporal
+workflows, or piping into other tools:
+
+```bash
+# Operational log records → stderr; full report → stdout
+LOG_FORMAT=json python ilm_review.py > report.json 2> ops.jsonl
+```
+
+The JSON report contains `summary`, `policies` (with per-index detail), and
+`recommendations` arrays. Progress and error messages are emitted as individual
+JSON records to stderr.
 
 ---
 
@@ -152,9 +169,10 @@ git commit -m "chore: bump <package> to x.y.z"
 ## Adding a new tool
 
 1. Drop your script at the repo root: `my_tool.py`
-2. Add any new dependencies to `[project.dependencies]` in `pyproject.toml`
-3. Run `uv lock && uv sync` (or re-enter the directory so direnv triggers sync)
-4. Add tests under `tests/`
+2. Call `configure_logging()` at the top of `main()` and use a named logger for all progress/error messages
+3. Add any new dependencies to `[project.dependencies]` in `pyproject.toml`
+4. Run `uv lock && uv sync` (or re-enter the directory so direnv triggers sync)
+5. Add tests under `tests/`
 
-Shared dependencies (e.g. `rich`, `elasticsearch`) are already available to
-all scripts without any extra steps.
+Shared dependencies (`rich`, `elasticsearch`, `slopbox.client`, `slopbox.formatting`,
+`slopbox.logging`) are already available without any extra steps.
