@@ -5,8 +5,7 @@ identity and connectivity metadata — not runtime state. Authentication is
 handled by kubeconfig (the `context` field names the kubectl context), so no
 separate credential field is needed.
 
-`build_client()` returning a CoreV1Api will be added in Phase 2 alongside the
-rest of the tool integration work.
+Use slopbox.k8s_client.build_client() to obtain a CoreV1Api bound to a cluster.
 
 Loaded via ClusterRegistry.from_yaml() from clusters.yaml.
 """
