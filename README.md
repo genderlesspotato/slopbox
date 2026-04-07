@@ -169,19 +169,68 @@ uv run python ilm_review.py
 
 ---
 
+## Credential resolution
+
+Credentials are resolved from **HashiCorp Vault** — the single source of truth
+for all cluster secrets. No credentials live in `clusters.yaml` or in the repo.
+
+### Vault KV convention
+
+Each Elasticsearch cluster has a KV secret at:
+
+```
+<mount>/slopbox/es/<cluster-name>
+```
+
+The secret must contain `api_key` (preferred) or both `username` and `password`:
+
+```
+# KV v2 (default):
+vault kv put secret/slopbox/es/prod-metrics api_key="<base64-id:key>"
+
+# Basic auth alternative:
+vault kv put secret/slopbox/es/prod-metrics username="elastic" password="..."
+```
+
+The `vault_path` field in `clusters.yaml` references this path relative to the
+mount (e.g. `slopbox/es/prod-metrics`).
+
+### Auth method
+
+| Context | How Vault is authenticated |
+|---------|---------------------------|
+| Developer laptop | `vault login` → sets `VAULT_TOKEN` in shell |
+| CI/CD pipeline | Vault OIDC GitHub Actions step → sets `VAULT_TOKEN` |
+| Temporal worker / k8s pod | k8s Service Account JWT auto-detected at `/var/run/secrets/kubernetes.io/serviceaccount/token` |
+
+### KV version
+
+Both KV v1 and v2 engines are supported. Set `VAULT_KV_VERSION=1` if your mount
+uses the legacy v1 engine. Defaults to `2`.
+
+---
+
 ## Environment variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `LOG_FORMAT` | Optional | Output mode: `human` (default) for Rich terminal output, `json` for machine-readable JSON |
-| `ES_HOST` | Yes (unless `ES_CLOUD_ID`) | Full cluster URL, e.g. `https://localhost:9200` |
-| `ES_CLOUD_ID` | Optional | Elastic Cloud ID — overrides `ES_HOST` |
-| `ES_API_KEY` | Optional* | API key string (base64 `id:key`) |
-| `ES_USERNAME` | Optional* | Basic auth username |
-| `ES_PASSWORD` | Optional* | Basic auth password |
+| `VAULT_ADDR` | Multi-cluster | Vault server URL, e.g. `https://vault.example.com` |
+| `VAULT_TOKEN` | One of† | Token auth — laptop/CI; not needed inside k8s pods |
+| `VAULT_ROLE` | Optional | Vault k8s auth role (default: `slopbox`) |
+| `VAULT_KV_MOUNT` | Optional | KV mount name (default: `secret`) |
+| `VAULT_KV_VERSION` | Optional | KV version, `1` or `2` (default: `2`) |
+| `ES_HOST` | Single-cluster | Full cluster URL, e.g. `https://localhost:9200` |
+| `ES_CLOUD_ID` | Single-cluster | Elastic Cloud ID — overrides `ES_HOST` |
+| `ES_API_KEY` | Single-cluster* | API key string (base64 `id:key`) |
+| `ES_USERNAME` | Single-cluster* | Basic auth username |
+| `ES_PASSWORD` | Single-cluster* | Basic auth password |
 
-\* Either `ES_API_KEY` **or** both `ES_USERNAME` + `ES_PASSWORD` must be set.
-API key takes precedence if both are provided.
+\* Single-cluster mode: used by tools not yet integrated with the cluster registry.
+Either `ES_API_KEY` **or** both `ES_USERNAME` + `ES_PASSWORD` must be set.
+
+† `VAULT_TOKEN` is used on laptops and in CI. Inside a Kubernetes pod, the Service
+Account JWT is detected automatically.
 
 ### JSON mode
 

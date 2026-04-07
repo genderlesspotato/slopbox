@@ -49,7 +49,20 @@ After `direnv allow`, re-entering the directory in any future shell automaticall
 
 \* Either `ES_API_KEY` or both `ES_USERNAME`+`ES_PASSWORD` must be set.
 
-**Kubernetes** (for k8s tools — not yet required):
+**Vault** (required for multi-cluster mode via `clusters.yaml`):
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `VAULT_ADDR` | Yes (multi-cluster) | Vault server URL, e.g. `https://vault.example.com` |
+| `VAULT_TOKEN` | One of* | Token auth — set by `vault login` on laptops; populated by Vault OIDC action in CI |
+| `VAULT_ROLE` | Optional | Vault k8s auth role for in-cluster workloads (default: `slopbox`) |
+| `VAULT_KV_MOUNT` | Optional | KV secrets engine mount name (default: `secret`) |
+| `VAULT_KV_VERSION` | Optional | KV engine version, `1` or `2` (default: `2`) |
+
+\* `VAULT_TOKEN` is used on laptops and in CI.  Inside a Kubernetes pod, the Service Account
+JWT at `/var/run/secrets/kubernetes.io/serviceaccount/token` is used automatically instead.
+
+**Kubernetes** (for k8s tools — auth strategy TBD, see `domain/k8s/cluster.py`):
 
 | Variable | Required | Notes |
 |----------|----------|-------|
@@ -133,7 +146,8 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 |------|------|
 | `ilm_review.py` | ILM review tool |
 | `dangling_index_scanner.py` | Dangling index scanner and reclaimer |
-| `slopbox/client.py` | Shared Elasticsearch client factory: `build_client()` |
+| `slopbox/client.py` | Shared Elasticsearch client factory: `build_client()` (single-cluster) and `build_client_for(cluster, secrets)` (multi-cluster) |
+| `slopbox/vault.py` | `SecretsBackend` Protocol + `VaultBackend` — Vault KV credential resolution (v1 and v2) |
 | `slopbox/formatting.py` | Shared formatting utilities: `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | Shared logging configuration: `get_log_format()`, `configure_logging()` |
 | `domain/es/models.py` | ES domain objects (`IndexProfile`, …) — Pydantic v2 with `@computed_field` display strings |
@@ -158,7 +172,8 @@ Utilities shared across tools live in the `slopbox/` package:
 
 | Module | Contents |
 |--------|----------|
-| `slopbox/client.py` | `build_client()` — env var validation + Elasticsearch client construction |
+| `slopbox/client.py` | `build_client()` — single-cluster env var mode; `build_client_for(cluster, secrets)` — multi-cluster Vault mode |
+| `slopbox/vault.py` | `SecretsBackend` Protocol + `VaultBackend` — Vault KV credential resolution (v1 and v2; token and k8s SA auth) |
 | `slopbox/formatting.py` | `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | `configure_logging()`, `get_log_format()` — human/JSON output mode |
 

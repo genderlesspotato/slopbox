@@ -1,8 +1,8 @@
 # Cluster inventory for the ops team's fleet.
 #
 # This file is the version-controlled (GitOps) source of truth for cluster
-# identity and connectivity metadata. No credentials here — see the team's
-# secrets management docs for credential wiring (Phase 2).
+# identity and connectivity metadata. No credentials here — credentials live
+# in Vault at the path specified by vault_path (ES clusters only).
 #
 # Fields:
 #   name               logical cluster name (unique within each type)
@@ -11,6 +11,8 @@
 #   region             cloud region slug, e.g. aws-us-east-1
 #   host               ES endpoint URL (mutually exclusive with cloud_id)
 #   cloud_id           Elastic Cloud ID (mutually exclusive with host)
+#   vault_path         Vault KV path relative to mount, e.g. slopbox/es/prod-metrics
+#                      Secret keys: api_key  OR  username + password
 #   context            kubectl context name (k8s only)
 #   default_namespace  default k8s namespace (k8s only, default: "default")
 #   tags               arbitrary key/value labels for filtering
@@ -21,6 +23,7 @@ elasticsearch:
     workload: metrics
     region: aws-us-east-1
     host: https://prod-metrics.example.com:9200
+    vault_path: slopbox/es/prod-metrics
     tags:
       tier: gold
 
@@ -29,6 +32,7 @@ elasticsearch:
     workload: logs
     region: aws-us-east-1
     host: https://prod-logs.example.com:9200
+    vault_path: slopbox/es/prod-logs
     tags:
       tier: gold
 
@@ -37,6 +41,7 @@ elasticsearch:
     workload: traces
     region: aws-us-east-1
     host: https://prod-traces.example.com:9200
+    vault_path: slopbox/es/prod-traces
     tags:
       tier: gold
 
@@ -45,6 +50,7 @@ elasticsearch:
     workload: apm
     region: aws-us-east-1
     host: https://prod-apm.example.com:9200
+    vault_path: slopbox/es/prod-apm
     tags:
       tier: gold
 
@@ -53,12 +59,14 @@ elasticsearch:
     workload: metrics
     region: aws-us-east-1
     host: https://staging-metrics.example.com:9200
+    vault_path: slopbox/es/staging-metrics
 
   - name: staging-logs
     environment: staging
     workload: logs
     region: aws-us-east-1
     host: https://staging-logs.example.com:9200
+    vault_path: slopbox/es/staging-logs
 
 kubernetes:
   - name: prod-us-east

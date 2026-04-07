@@ -21,6 +21,7 @@ MINIMAL_ES = {
     "environment": "prod",
     "workload": "metrics",
     "host": "https://prod-metrics.example.com:9200",
+    "vault_path": "slopbox/es/prod-metrics",
 }
 
 MINIMAL_K8S = {
@@ -38,6 +39,7 @@ REGISTRY_DICT = {
             "workload": "logs",
             "region": "aws-us-east-1",
             "host": "https://prod-logs.example.com:9200",
+            "vault_path": "slopbox/es/prod-logs",
             "tags": {"tier": "gold"},
         },
         {
@@ -45,6 +47,7 @@ REGISTRY_DICT = {
             "environment": "staging",
             "workload": "logs",
             "host": "https://staging-logs.example.com:9200",
+            "vault_path": "slopbox/es/staging-logs",
         },
     ],
     "kubernetes": [
@@ -68,6 +71,7 @@ class TestElasticsearchClusterConfig:
         assert c.name == "prod-metrics"
         assert c.host == "https://prod-metrics.example.com:9200"
         assert c.cloud_id is None
+        assert c.vault_path == "slopbox/es/prod-metrics"
         assert c.tags == {}
 
     def test_valid_with_cloud_id(self) -> None:
@@ -76,6 +80,7 @@ class TestElasticsearchClusterConfig:
             environment="prod",
             workload="logs",
             cloud_id="prod-logs:dXMtZWFzdC0x",
+            vault_path="slopbox/es/prod-logs",
         )
         assert c.cloud_id == "prod-logs:dXMtZWFzdC0x"
         assert c.host is None
@@ -86,6 +91,7 @@ class TestElasticsearchClusterConfig:
                 name="bad",
                 environment="prod",
                 workload="metrics",
+                vault_path="slopbox/es/bad",
             )
 
     def test_forbids_extra_fields(self) -> None:
@@ -178,7 +184,8 @@ class TestClusterRegistryConstruction:
     def test_from_yaml_raises_on_missing_host_and_cloud_id(self, tmp_path: Path) -> None:
         bad = {
             "elasticsearch": [
-                {"name": "bad", "environment": "prod", "workload": "metrics"}
+                {"name": "bad", "environment": "prod", "workload": "metrics",
+                 "vault_path": "slopbox/es/bad"}
             ]
         }
         yaml_file = tmp_path / "clusters.yaml"
@@ -293,6 +300,7 @@ class TestRealClustersYaml:
             assert c.environment
             assert c.workload
             assert c.host or c.cloud_id
+            assert c.vault_path
 
     def test_all_k8s_clusters_have_required_fields(self) -> None:
         clusters_path = Path(__file__).parent.parent.parent.parent / "clusters.yaml"
