@@ -46,14 +46,15 @@ with workflow.unsafe.imports_passed_through():
         validate_export_request,
         write_manifest,
     )
-    from .models import (
-        CleanupParams,
-        ExportChunkParams,
-        ExportChunkResult,
-        KibanaLogExportRequest,
-        KibanaLogExportResult,
-        WriteManifestParams,
-    )
+
+from .models import (
+    CleanupParams,
+    ExportChunkParams,
+    ExportChunkResult,
+    KibanaLogExportRequest,
+    KibanaLogExportResult,
+    WriteManifestParams,
+)
 
 logger = logging.getLogger("kibana_export")
 
