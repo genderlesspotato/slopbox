@@ -27,7 +27,7 @@ from rich.console import Console
 from rich.table import Table
 from rich import box
 
-from slopbox.client import build_client
+from slopbox.client import build_connected_cluster
 from slopbox.formatting import format_bytes, format_duration, phase_style, health_style
 
 logger = logging.getLogger("ilm_review")
@@ -685,7 +685,8 @@ def main() -> None:
     log_format = configure_logging()
     console = Console() if log_format == "human" else None
 
-    client = build_client()
+    cluster = build_connected_cluster()
+    client = cluster.client
 
     try:
         if console:
