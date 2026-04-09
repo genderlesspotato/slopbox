@@ -3,3 +3,5 @@ members = ["packages/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["packages/tools/tests"]
+pythonpath = ["packages/tools", "packages/temporal-workflows"]
+asyncio_mode = "auto"
