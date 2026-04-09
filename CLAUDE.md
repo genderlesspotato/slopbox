@@ -136,12 +136,13 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 | `ilm_review.py` | ILM review tool |
 | `dangling_index_scanner.py` | Dangling index scanner and reclaimer |
 | `k8s_inventory.py` | k8s cluster inventory tool |
-| `slopbox/client.py` | Shared Elasticsearch client factory: `build_client()` |
+| `slopbox/client.py` | Shared Elasticsearch client factory: `build_client()`, `build_connected_cluster()` → `ConnectedCluster` |
 | `slopbox/formatting.py` | Shared formatting utilities: `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | Shared logging configuration: `get_log_format()`, `configure_logging()` |
 | `slopbox/k8s_client.py` | k8s client factory: `build_client()` (CoreV1Api), `build_api_bundle()` (KubernetesApiBundle — all 4 API types sharing one connection) |
 | `domain/es/models.py` | ES domain objects (`IndexProfile`, …) — Pydantic v2 with `@computed_field` display strings |
 | `domain/es/types.py` | Raw ES API boundary models (`RawCatIndexEntry`, `RawIlmExplainEntry`, `RawCatRecoveryEntry`, …) — owns all string→int coercion |
+| `domain/es/version.py` | `ClusterVersion` — parsed cluster version with capability predicates; single place where ES version numbers are compared |
 | `domain/k8s/models.py` | k8s domain objects (`PodProfile`, `NodeProfile`, `ResourceItem`, `PillarSnapshot`, `ClusterSnapshot`) — Pydantic, constructed via classmethods |
 | `tests/test_ilm_review.py` | ILM tool unit tests — 58+ cases including full profiling and JSON report suite |
 | `tests/test_dangling_index_scanner.py` | Dangling scanner unit tests — filesystem, cluster-state parsing, quarantine/reap logic, JSON report |
@@ -164,7 +165,7 @@ Utilities shared across tools live in the `slopbox/` package:
 
 | Module | Contents |
 |--------|----------|
-| `slopbox/client.py` | `build_client()` — env var validation + Elasticsearch client construction |
+| `slopbox/client.py` | `build_client()` — env var validation + ES client construction; `build_connected_cluster()` — returns `ConnectedCluster` (client + detected version) |
 | `slopbox/formatting.py` | `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | `configure_logging()`, `get_log_format()` — human/JSON output mode |
 | `slopbox/k8s_client.py` | `build_client()` (CoreV1Api only), `build_api_bundle()` (KubernetesApiBundle — CoreV1Api + AppsV1Api + CustomObjectsApi + VersionApi, one connection per cluster) |
@@ -172,7 +173,8 @@ Utilities shared across tools live in the `slopbox/` package:
 Import them directly in any tool:
 
 ```python
-from slopbox.client import build_client
+from slopbox.client import build_connected_cluster   # version-aware (preferred)
+from slopbox.client import build_client              # plain client, no version detection
 from slopbox.formatting import format_bytes, format_duration, phase_style, health_style
 from slopbox.logging import configure_logging
 ```
@@ -236,6 +238,63 @@ bundle.apps      # AppsV1Api
 bundle.custom    # CustomObjectsApi
 bundle.version   # VersionApi
 ```
+
+---
+
+## Version Handling
+
+Tools run against ES 7, 8, and 9. Version differences are handled through a two-layer approach that keeps version numbers out of tool code.
+
+### The pattern
+
+| Layer | Object | Home |
+|-------|--------|------|
+| Domain | `ClusterVersion` — capability predicates | `slopbox_domain/es/version.py` |
+| Infrastructure | `ConnectedCluster` — client + detected version | `slopbox/client.py` |
+
+**Rule: version numbers are compared only inside `ClusterVersion`.** Tool code reads capability predicates only — never `if major == 8`.
+
+```python
+# In a tool's main():
+from slopbox.client import build_connected_cluster
+
+cluster = build_connected_cluster()          # calls client.info() once
+client  = cluster.client
+version = cluster.version
+
+# In logic that differs by version — ask "can it do X?", not "what version is it?":
+if version.uses_flat_indices_dir:
+    indices_path = data_path / "indices"
+else:
+    indices_path = data_path / "nodes" / "0" / "indices"
+```
+
+### `ClusterVersion` capability predicates
+
+| Predicate | True when |
+|-----------|-----------|
+| `uses_flat_indices_dir` | ES 8+ — data dir is `<root>/indices/`, not `<root>/nodes/0/indices/` |
+| `has_primary_shard_rollover` | ES 8+ — `max_primary_shard_size` ILM criterion available |
+| `has_frozen_tier` | ES 7.12+ — frozen phase with searchable snapshots available |
+| `has_max_primary_shard_docs` | ES 8.2+ — `max_primary_shard_docs` ILM criterion available |
+
+### Lifecycle rule
+
+When a new ES major is released:
+1. Add or update predicates in `slopbox_domain/es/version.py` — the single source of truth.
+2. `ClusterVersion.from_info()` will parse it automatically (no changes needed unless the version string format changes).
+3. Tool code that uses existing predicates needs no changes unless the new major introduces a genuinely new capability the tool wants to exploit.
+
+### Applying the same pattern to other domains
+
+The k8s domain can adopt the same pattern when needed:
+
+```
+slopbox_domain/k8s/version.py   ← KubernetesVersion with capability predicates
+slopbox/k8s_client.py           ← extend KubernetesApiBundle with a version field
+```
+
+`KubernetesVersion.from_version_info(api.get_code())` — the `VersionApi` object already exists in `KubernetesApiBundle`.
 
 ---
 
