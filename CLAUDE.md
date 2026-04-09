@@ -10,6 +10,7 @@
 |--------|---------|
 | `ilm_review.py` | Inventories ILM-managed indices grouped by policy and emits per-data-stream recommendations to tune ILM policy and index template settings |
 | `dangling_index_scanner.py` | Scans an ES data node's `indices/` directory for UUID directories the cluster no longer recognises; quarantines and reaps them with layered safety checks |
+| `k8s_inventory.py` | Inventories k8s clusters; reports observability workloads (ECK, VictoriaMetrics, Logstash, Tempo) per pillar as markdown |
 
 **Runtime:** Python 3.11+, managed by [uv](https://docs.astral.sh/uv/).
 
@@ -49,13 +50,14 @@ After `direnv allow`, re-entering the directory in any future shell automaticall
 
 \* Either `ES_API_KEY` or both `ES_USERNAME`+`ES_PASSWORD` must be set.
 
-**Kubernetes** (for k8s tools — not yet required):
+**Kubernetes** (for k8s tools):
 
 | Variable | Required | Notes |
 |----------|----------|-------|
 | `KUBECONFIG` | Optional | Path to kubeconfig file; defaults to `~/.kube/config` |
 | `K8S_CONTEXT` | Optional | kubectl context to use; defaults to current context |
 | `K8S_NAMESPACE` | Optional | Namespace to target; tool-specific default applies if unset |
+| `INVENTORY_DIR` | Optional | Output directory for `k8s_inventory.py` markdown pages; default `./inventory` |
 
 ---
 
@@ -133,17 +135,21 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 |------|------|
 | `ilm_review.py` | ILM review tool |
 | `dangling_index_scanner.py` | Dangling index scanner and reclaimer |
+| `k8s_inventory.py` | k8s cluster inventory tool |
 | `slopbox/client.py` | Shared Elasticsearch client factory: `build_client()` |
 | `slopbox/formatting.py` | Shared formatting utilities: `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | Shared logging configuration: `get_log_format()`, `configure_logging()` |
+| `slopbox/k8s_client.py` | k8s client factory: `build_client()` (CoreV1Api), `build_api_bundle()` (KubernetesApiBundle — all 4 API types sharing one connection) |
 | `domain/es/models.py` | ES domain objects (`IndexProfile`, …) — Pydantic v2 with `@computed_field` display strings |
 | `domain/es/types.py` | Raw ES API boundary models (`RawCatIndexEntry`, `RawIlmExplainEntry`, `RawCatRecoveryEntry`, …) — owns all string→int coercion |
-| `domain/k8s/models.py` | k8s domain objects (`PodProfile`, …) — constructed via classmethods from k8s client objects |
+| `domain/k8s/models.py` | k8s domain objects (`PodProfile`, `NodeProfile`, `ResourceItem`, `PillarSnapshot`, `ClusterSnapshot`) — Pydantic, constructed via classmethods |
 | `tests/test_ilm_review.py` | ILM tool unit tests — 58+ cases including full profiling and JSON report suite |
 | `tests/test_dangling_index_scanner.py` | Dangling scanner unit tests — filesystem, cluster-state parsing, quarantine/reap logic, JSON report |
+| `tests/test_k8s_inventory.py` | k8s inventory unit tests — 39 cases covering all layers (model, fetch, scan, render, main) |
 | `tests/test_domain_es.py` | Boundary coercion + domain model tests |
 | `tests/test_formatting.py` | Formatter helper tests |
 | `tests/test_client.py` | Unit tests for `slopbox.client` |
+| `tests/test_k8s_client.py` | Unit tests for `slopbox.k8s_client` — `build_client` and `build_api_bundle` |
 | `tests/test_logging.py` | Unit tests for `slopbox.logging` |
 | `pyproject.toml` | Project metadata, dependencies, pytest config |
 | `uv.lock` | Pinned dependency tree (committed intentionally) |
@@ -161,6 +167,7 @@ Utilities shared across tools live in the `slopbox/` package:
 | `slopbox/client.py` | `build_client()` — env var validation + Elasticsearch client construction |
 | `slopbox/formatting.py` | `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | `configure_logging()`, `get_log_format()` — human/JSON output mode |
+| `slopbox/k8s_client.py` | `build_client()` (CoreV1Api only), `build_api_bundle()` (KubernetesApiBundle — CoreV1Api + AppsV1Api + CustomObjectsApi + VersionApi, one connection per cluster) |
 
 Import them directly in any tool:
 
@@ -217,6 +224,18 @@ profile = PodProfile.from_v1pod(pod)
 ```
 
 No `k8s/types.py` module is needed; the k8s client itself is the boundary type.
+
+**Client construction:** Use `build_api_bundle()` for tools that need more than `CoreV1Api`. It calls `new_client_from_config()` exactly once per cluster and returns a `KubernetesApiBundle` (frozen dataclass) holding all four API wrappers sharing one connection. `KubernetesApiBundle` is infrastructure plumbing — it lives in `slopbox/k8s_client.py`, not `domain/`.
+
+```python
+from slopbox.k8s_client import build_api_bundle, KubernetesApiBundle
+
+bundle = build_api_bundle(config)   # one connection, four API objects
+bundle.core      # CoreV1Api
+bundle.apps      # AppsV1Api
+bundle.custom    # CustomObjectsApi
+bundle.version   # VersionApi
+```
 
 ---
 
@@ -347,6 +366,59 @@ external coordination or database is needed.
 | ES 7.x | `$ES_DATA_PATH/nodes/0/indices/` |
 
 `find_indices_dir()` tries the 8.x path first.
+
+---
+
+## Architecture of `k8s_inventory.py`
+
+Connects to every Kubernetes cluster in `clusters.yaml` in parallel and produces a markdown inventory of observability workloads.
+
+**API calls per cluster:**
+```
+bundle.version.get_code()                      # k8s server version
+bundle.core.list_node()                        # node list
+bundle.custom.list_namespaced_custom_object()  # once per CRD spec (ECK ES, Kibana, VMCluster, VMSingle)
+bundle.apps.list_namespaced_deployment()       # once per Deployment spec (Logstash, Tempo)
+```
+
+**Data flow:**
+```
+clusters.yaml → ClusterRegistry → registry.kubernetes
+  → ThreadPoolExecutor: scan_cluster(config)  [parallel, one thread per cluster]
+    → build_api_bundle(config) → KubernetesApiBundle
+    → fetch_nodes()            → list[NodeProfile]
+    → for each pillar in PILLARS:
+        for each spec in pillar:
+          fetch_resources(bundle, spec, namespace) → (list[dict], bool)
+          _extract_attributes(spec, raw)           → dict[str, str]
+          → ResourceItem(kind, name, namespace, attributes)
+      → PillarSnapshot(name, detected, resources)
+    → ClusterSnapshot(config, k8s_version, node_profiles, pillars)
+  → render_index_md(registry, snapshots) → str
+  → render_cluster_md(snapshot) → str    (one per cluster)
+  → write_inventory(output_dir, pages)   (disk + stdout)
+```
+
+**Key components:**
+
+| Component | Role |
+|-----------|------|
+| `ResourceSpec` | Frozen dataclass (tool-internal config): describes one resource type to fetch — kind, api_group, version, plural, optional name_filter |
+| `PILLARS` | `dict[str, list[ResourceSpec]]` — declarative pillar config; add a new resource type with one `ResourceSpec(...)` line |
+| `fetch_resources()` | Single generic fetch: routes to `AppsV1Api` (Deployments) or `CustomObjectsApi` (CRDs); 404/405 → `([], False)` |
+| `_v1deployment_to_raw()` | Normalises `V1Deployment` typed objects to the same dict shape as CRD items |
+| `_extract_attributes()` | Per-kind attribute extraction from normalised dict → `dict[str, str]` display fields |
+| `scan_cluster()` | Connects, fetches all pillars, assembles `ClusterSnapshot`; non-404/405 exceptions re-raise |
+| `render_index_md()` | Fleet overview page: cluster table + ES registry table |
+| `render_cluster_md()` | Per-cluster detail: nodes table + one sub-table per resource kind per pillar |
+| `write_inventory()` | `mkdir -p`, write files, print to stdout |
+| `main()` | `configure_logging()`, arg/env parsing, parallel scan, render, write |
+
+**Pydantic vs dataclass:**
+- `ResourceSpec`, `KubernetesApiBundle` — frozen **dataclasses**: static config/infrastructure, not external data
+- `NodeProfile`, `ResourceItem`, `PillarSnapshot`, `ClusterSnapshot` — **Pydantic**: runtime domain data from the k8s API
+
+**Output:** `INVENTORY_DIR/index.md` + `INVENTORY_DIR/{cluster-name}.md` (also printed to stdout)
 
 ---
 
