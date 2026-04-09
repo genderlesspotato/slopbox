@@ -11,7 +11,9 @@ is added.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from slopbox_domain.k8s.cluster import KubernetesClusterConfig
 
 
 class PodProfile(BaseModel):
@@ -58,3 +60,63 @@ class PodProfile(BaseModel):
             cpu_request=cpu_request,
             memory_request=memory_request,
         )
+
+
+# ---------------------------------------------------------------------------
+# Cluster inventory domain models
+# ---------------------------------------------------------------------------
+
+class NodeProfile(BaseModel):
+    """A Kubernetes node with role and cloud topology metadata."""
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    role: str                    # "control-plane" | "worker"
+    instance_type: str | None
+    region: str | None
+
+    @classmethod
+    def from_v1node(cls, node: object) -> NodeProfile:
+        """Construct from a kubernetes.client.V1Node object."""
+        labels: dict[str, str] = node.metadata.labels or {}
+        role = "control-plane" if "node-role.kubernetes.io/control-plane" in labels else "worker"
+        return cls(
+            name=node.metadata.name,
+            role=role,
+            instance_type=labels.get("node.kubernetes.io/instance-type"),
+            region=labels.get("topology.kubernetes.io/region"),
+        )
+
+
+class ResourceItem(BaseModel):
+    """A single discovered k8s resource, shaped for inventory display.
+
+    Replaces per-kind profile classes (EckElasticsearchProfile, etc.).
+    Attribute keys and values are kind-specific strings suitable for
+    rendering directly into a markdown table.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    kind: str        # "Elasticsearch", "VMCluster", "Deployment", etc.
+    name: str
+    namespace: str
+    attributes: dict[str, str]  # ordered display fields, e.g. {"version": "8.12.0", "health": "green"}
+
+
+class PillarSnapshot(BaseModel):
+    """Inventory of resources for one observability pillar (logs/traces/metrics)."""
+    model_config = ConfigDict(frozen=True)
+
+    name: str               # "logs" | "traces" | "metrics"
+    detected: bool          # False only when all CRD calls returned 404/405 and no Deployments matched
+    resources: list[ResourceItem] = Field(default_factory=list)
+
+
+class ClusterSnapshot(BaseModel):
+    """Full inventory for a single k8s cluster."""
+    model_config = ConfigDict(frozen=True)
+
+    config: KubernetesClusterConfig
+    k8s_version: str
+    node_profiles: list[NodeProfile] = Field(default_factory=list)
+    pillars: list[PillarSnapshot] = Field(default_factory=list)
