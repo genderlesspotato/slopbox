@@ -57,9 +57,10 @@ from rich.console import Console
 from rich.table import Table
 from rich import box
 
-from slopbox.client import build_client
+from slopbox.client import build_connected_cluster, ConnectedCluster
 from slopbox.logging import configure_logging
 from slopbox_domain.es.types import RawCatRecoveryEntry
+from slopbox_domain.es.version import ClusterVersion
 
 logger = logging.getLogger("dangling_index_scanner")
 
@@ -191,17 +192,31 @@ def _build_name_to_uuid(cluster_state: dict) -> dict[str, str]:
 # Filesystem helpers
 # ---------------------------------------------------------------------------
 
-def find_indices_dir(data_path: Path) -> Path | None:
+def find_indices_dir(
+    data_path: Path,
+    version: ClusterVersion | None = None,
+) -> Path | None:
     """Locate the indices directory under an Elasticsearch data path.
 
     Handles both layouts:
-      ES 8.x:  <data_path>/indices/
-      ES 7.x:  <data_path>/nodes/0/indices/
+      ES 8+:  <data_path>/indices/
+      ES 7:   <data_path>/nodes/0/indices/
+
+    If ``version`` is provided the expected layout is tried first; both paths
+    are always probed for robustness (non-standard installs, in-place upgrade
+    scenarios where the layout may lag the detected version, etc.).
     """
-    for candidate in (
-        data_path / "indices",
-        data_path / "nodes" / "0" / "indices",
-    ):
+    if version is not None and not version.uses_flat_indices_dir:
+        candidates = (
+            data_path / "nodes" / "0" / "indices",
+            data_path / "indices",
+        )
+    else:
+        candidates = (
+            data_path / "indices",
+            data_path / "nodes" / "0" / "indices",
+        )
+    for candidate in candidates:
         if candidate.is_dir():
             return candidate
     return None
@@ -459,12 +474,13 @@ def reap_quarantine(
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def run_scan(client: Elasticsearch, data_path: Path, dry_run: bool) -> ScanResult:
+def run_scan(cluster: ConnectedCluster, data_path: Path, dry_run: bool) -> ScanResult:
     """Execute one full scan-quarantine-reap cycle.
 
     Fetches cluster state, scans the indices directory, quarantines candidates,
     and reaps aged quarantine entries.
     """
+    client = cluster.client
     now_s = time.time()
 
     # --- Cluster state ---
@@ -487,7 +503,7 @@ def run_scan(client: Elasticsearch, data_path: Path, dry_run: bool) -> ScanResul
         raise RuntimeError(f"cannot fetch active recoveries: {exc}") from exc
 
     # --- Filesystem ---
-    indices_dir = find_indices_dir(data_path)
+    indices_dir = find_indices_dir(data_path, version=cluster.version)
     if indices_dir is None:
         raise RuntimeError(
             f"no indices/ directory found under {data_path} "
@@ -615,11 +631,11 @@ def main() -> None:
     if dry_run:
         logger.info("running in dry-run mode (set DRY_RUN=false to enable mutations)")
 
-    client = build_client()
+    cluster = build_connected_cluster()
 
     while True:
         try:
-            result = run_scan(client, data_path, dry_run)
+            result = run_scan(cluster, data_path, dry_run)
         except (AuthenticationException, ConnectionError, TransportError) as exc:
             logger.error("Elasticsearch error: %s", exc)
             sys.exit(1)

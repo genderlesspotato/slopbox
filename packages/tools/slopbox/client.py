@@ -3,8 +3,11 @@
 import logging
 import os
 import sys
+from dataclasses import dataclass
 
 from elasticsearch import Elasticsearch
+
+from slopbox_domain.es.version import ClusterVersion
 
 logger = logging.getLogger(__name__)
 
@@ -40,3 +43,39 @@ def build_client() -> Elasticsearch:
         kwargs["basic_auth"] = (username, password)
 
     return Elasticsearch(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Connected cluster — client + detected version
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ConnectedCluster:
+    """An Elasticsearch client paired with the cluster's detected version.
+
+    Use ``build_connected_cluster()`` to construct this. Tools that need
+    version-aware behaviour should accept or hold a ``ConnectedCluster``
+    rather than a bare ``Elasticsearch`` instance.
+    """
+
+    client: Elasticsearch
+    version: ClusterVersion
+
+
+def build_connected_cluster() -> ConnectedCluster:
+    """Build an ES client, detect the cluster version, and return both.
+
+    Calls ``client.info()`` once after construction to resolve the running
+    version. Exits with code 1 if the cluster cannot be reached or the
+    version string cannot be parsed — version detection is a hard requirement
+    for version-aware tools.
+    """
+    client = build_client()
+    try:
+        info = client.info()
+        version = ClusterVersion.from_info(info.body)
+    except Exception as exc:
+        logger.error("failed to detect cluster version: %s", exc)
+        sys.exit(1)
+    logger.info("connected to Elasticsearch %s", version)
+    return ConnectedCluster(client=client, version=version)

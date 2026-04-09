@@ -31,6 +31,7 @@ from dangling_index_scanner import (
     scan_for_candidates,
 )
 from slopbox_domain.es.types import RawCatRecoveryEntry
+from slopbox_domain.es.version import ClusterVersion
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +233,51 @@ def test_find_indices_dir_es8x_preferred_over_7x(tmp_path):
 
 def test_find_indices_dir_returns_none_when_absent(tmp_path):
     assert find_indices_dir(tmp_path) is None
+
+
+# find_indices_dir — version hint tests
+
+def test_find_indices_dir_es8x_version_hint_uses_flat_path(tmp_path):
+    """ES 8+ version hint: flat indices/ path is tried first and found."""
+    indices = tmp_path / "indices"
+    indices.mkdir()
+    v = ClusterVersion(major=8, minor=0, patch=0)
+    assert find_indices_dir(tmp_path, version=v) == indices
+
+
+def test_find_indices_dir_es7x_version_hint_uses_nested_path(tmp_path):
+    """ES 7 version hint: nodes/0/indices/ path is tried first and found."""
+    indices = tmp_path / "nodes" / "0" / "indices"
+    indices.mkdir(parents=True)
+    v = ClusterVersion(major=7, minor=17, patch=0)
+    assert find_indices_dir(tmp_path, version=v) == indices
+
+
+def test_find_indices_dir_es9x_version_hint_uses_flat_path(tmp_path):
+    """ES 9 version hint: flat indices/ path is tried first and found."""
+    indices = tmp_path / "indices"
+    indices.mkdir()
+    v = ClusterVersion(major=9, minor=0, patch=0)
+    assert find_indices_dir(tmp_path, version=v) == indices
+
+
+def test_find_indices_dir_falls_back_when_expected_path_missing(tmp_path):
+    """Version says ES 8+ (flat layout) but only the 7.x nested path exists.
+
+    This covers in-place upgrades and non-standard installs — the probe
+    fallback must still return the directory rather than None.
+    """
+    indices = tmp_path / "nodes" / "0" / "indices"
+    indices.mkdir(parents=True)
+    v = ClusterVersion(major=8, minor=0, patch=0)
+    assert find_indices_dir(tmp_path, version=v) == indices
+
+
+def test_find_indices_dir_version_none_behaves_as_before(tmp_path):
+    """No version hint: behaviour is identical to the no-argument call."""
+    indices = tmp_path / "indices"
+    indices.mkdir()
+    assert find_indices_dir(tmp_path, version=None) == indices
 
 
 # ---------------------------------------------------------------------------
