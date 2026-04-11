@@ -11,6 +11,7 @@
 | `ilm_review.py` | Inventories ILM-managed indices grouped by policy and emits per-data-stream recommendations to tune ILM policy and index template settings |
 | `dangling_index_scanner.py` | Scans an ES data node's `indices/` directory for UUID directories the cluster no longer recognises; quarantines and reaps them with layered safety checks |
 | `k8s_inventory.py` | Inventories k8s clusters; reports observability workloads (ECK, VictoriaMetrics, Logstash, Tempo) per pillar as markdown |
+| `vm_comparison.py` | Compares data similarity between two VictoriaMetrics clusters (metric coverage, cardinality, sample density, value alignment); used for post-maintenance validation |
 
 **Runtime:** Python 3.11+, managed by [uv](https://docs.astral.sh/uv/).
 
@@ -72,6 +73,14 @@ uv run python ilm_review.py
 ```
 
 Configuration comes from environment variables. Tools may also accept CLI arguments that override env vars — see each tool's documentation.
+
+> **TODO — env var vs CLI convention review:** The current pattern (env vars as primary config, CLI as
+> optional override) was designed for single-cluster tools where the target cluster is stable across
+> invocations (e.g. `ES_HOST`). Comparison and multi-target tools are a better fit for CLI-primary
+> configuration: positional args for *what* to operate on, flags for tuning, env vars only for
+> credentials and truly global config (`LOG_FORMAT`, `DRY_RUN`). We may want to standardise on
+> CLI-primary across all tools and reserve env vars for a small exceptional set. Revisit when adding
+> the next tool.
 
 ---
 
@@ -140,13 +149,18 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 | `slopbox/formatting.py` | Shared formatting utilities: `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | Shared logging configuration: `get_log_format()`, `configure_logging()` |
 | `slopbox/k8s_client.py` | k8s client factory: `build_client()` (CoreV1Api), `build_api_bundle()` (KubernetesApiBundle — all 4 API types sharing one connection) |
+| `slopbox/vm_client.py` | VictoriaMetrics client factory: `build_vm_client()` → `VmClient` (label values, tsdb status, instant query, /metrics scrape) |
 | `domain/es/models.py` | ES domain objects (`IndexProfile`, …) — Pydantic v2 with `@computed_field` display strings |
 | `domain/es/types.py` | Raw ES API boundary models (`RawCatIndexEntry`, `RawIlmExplainEntry`, `RawCatRecoveryEntry`, …) — owns all string→int coercion |
 | `domain/es/version.py` | `ClusterVersion` — parsed cluster version with capability predicates; single place where ES version numbers are compared |
 | `domain/k8s/models.py` | k8s domain objects (`PodProfile`, `NodeProfile`, `ResourceItem`, `PillarSnapshot`, `ClusterSnapshot`) — Pydantic, constructed via classmethods |
+| `domain/metrics/cluster.py` | `VictoriaMetricsClusterConfig` — VM cluster identity and connectivity config |
+| `domain/metrics/types.py` | Raw VM/Prometheus API boundary models (`RawTsdbStatus`, `RawQueryResponse`, `RawLabelValuesResponse`) |
+| `domain/metrics/models.py` | VM similarity domain objects (`CoverageProfile`, `CardinalityProfile`, `DensityProfile`, `ValueProfile`, `VmInternalProfile`, `SimilarityReport`) |
 | `tests/test_ilm_review.py` | ILM tool unit tests — 58+ cases including full profiling and JSON report suite |
 | `tests/test_dangling_index_scanner.py` | Dangling scanner unit tests — filesystem, cluster-state parsing, quarantine/reap logic, JSON report |
 | `tests/test_k8s_inventory.py` | k8s inventory unit tests — 39 cases covering all layers (model, fetch, scan, render, main) |
+| `tests/test_vm_comparison.py` | VM comparison unit tests — 58 cases covering all dimensions (coverage, cardinality, density, value, internals, render, registry) |
 | `tests/test_domain_es.py` | Boundary coercion + domain model tests |
 | `tests/test_formatting.py` | Formatter helper tests |
 | `tests/test_client.py` | Unit tests for `slopbox.client` |
@@ -169,6 +183,7 @@ Utilities shared across tools live in the `slopbox/` package:
 | `slopbox/formatting.py` | `format_bytes`, `format_duration`, `phase_style`, `health_style` |
 | `slopbox/logging.py` | `configure_logging()`, `get_log_format()` — human/JSON output mode |
 | `slopbox/k8s_client.py` | `build_client()` (CoreV1Api only), `build_api_bundle()` (KubernetesApiBundle — CoreV1Api + AppsV1Api + CustomObjectsApi + VersionApi, one connection per cluster) |
+| `slopbox/vm_client.py` | `build_vm_client()` → `VmClient` — label values, tsdb status, instant PromQL queries, /metrics scrape; no auth (internal clusters) |
 
 Import them directly in any tool:
 

@@ -4,16 +4,24 @@
 # identity and connectivity metadata. No credentials here — see the team's
 # secrets management docs for credential wiring (Phase 2).
 #
-# Fields:
+# Fields (common):
 #   name               logical cluster name (unique within each type)
 #   environment        prod | staging | dev
-#   workload           metrics | logs | traces | apm  (ES only)
 #   region             cloud region slug, e.g. aws-us-east-1
+#   tags               arbitrary key/value labels for filtering
+#
+# Elasticsearch-specific:
+#   workload           metrics | logs | traces | apm
 #   host               ES endpoint URL (mutually exclusive with cloud_id)
 #   cloud_id           Elastic Cloud ID (mutually exclusive with host)
-#   context            kubectl context name (k8s only)
-#   default_namespace  default k8s namespace (k8s only, default: "default")
-#   tags               arbitrary key/value labels for filtering
+#
+# Kubernetes-specific:
+#   context            kubectl context name
+#   default_namespace  default k8s namespace (default: "default")
+#
+# VictoriaMetrics-specific:
+#   host               HTTP base URL, e.g. http://vm.internal:8428
+#   role               primary | replica (optional, informational)
 
 elasticsearch:
   - name: prod-metrics
@@ -82,3 +90,32 @@ kubernetes:
     environment: staging
     region: aws-us-east-1
     default_namespace: monitoring
+
+victoriametrics:
+  - name: prod-metrics-a
+    host: http://vm-a.internal:8428
+    environment: prod
+    role: primary
+    region: aws-us-east-1
+    tags:
+      tier: gold
+
+  - name: prod-metrics-b
+    host: http://vm-b.internal:8428
+    environment: prod
+    role: replica
+    region: aws-us-east-1
+    tags:
+      tier: gold
+
+  - name: staging-metrics-a
+    host: http://vm-staging-a.internal:8428
+    environment: staging
+    role: primary
+    region: aws-us-east-1
+
+  - name: staging-metrics-b
+    host: http://vm-staging-b.internal:8428
+    environment: staging
+    role: replica
+    region: aws-us-east-1

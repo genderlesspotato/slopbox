@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "elasticsearch>=8.0.0",
     "kubernetes>=29.0.0",
+    "requests>=2.28",
     "rich>=13.0.0",
     "slopbox-domain",
 ]
