@@ -66,7 +66,7 @@ def configure_logging(format: LogFormat | None = None) -> LogFormat:
 
     # Bring slopbox tool loggers up to INFO without opening the floodgates for
     # third-party libraries that live under different hierarchy roots.
-    for name in ("slopbox", "ilm_review", "dangling_index_scanner", "k8s_inventory"):
+    for name in ("slopbox", "ilm_review", "dangling_index_scanner", "k8s_inventory", "vm_comparison"):
         logging.getLogger(name).setLevel(logging.INFO)
 
     return log_format

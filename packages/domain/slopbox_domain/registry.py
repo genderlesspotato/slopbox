@@ -20,6 +20,10 @@ Usage:
 
     # k8s clusters:
     prod_k8s = registry.k8s(environment="prod")
+
+    # VictoriaMetrics clusters:
+    prod_vm = registry.vm(environment="prod")
+    vm_a = registry.vm(name="prod-metrics-a")[0]
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slopbox_domain.es.cluster import ElasticsearchClusterConfig
 from slopbox_domain.k8s.cluster import KubernetesClusterConfig
+from slopbox_domain.metrics.cluster import VictoriaMetricsClusterConfig
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +48,7 @@ class ClusterRegistry(BaseModel):
 
     elasticsearch: list[ElasticsearchClusterConfig] = Field(default_factory=list)
     kubernetes: list[KubernetesClusterConfig] = Field(default_factory=list)
+    victoriametrics: list[VictoriaMetricsClusterConfig] = Field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, path: Path) -> ClusterRegistry:
@@ -71,6 +77,18 @@ class ClusterRegistry(BaseModel):
             registry.k8s(tier="gold")   # matches tags
         """
         return [c for c in self.kubernetes if _matches(c, filters)]
+
+    def vm(self, **filters: str) -> list[VictoriaMetricsClusterConfig]:
+        """Return VictoriaMetrics clusters matching all given filters.
+
+        Filters are matched against direct model fields first, then against
+        the ``tags`` dict.  e.g.::
+
+            registry.vm(environment="prod")
+            registry.vm(role="primary")
+            registry.vm(name="prod-metrics-a")
+        """
+        return [c for c in self.victoriametrics if _matches(c, filters)]
 
 
 # ---------------------------------------------------------------------------
