@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from slopbox_domain.es.cluster import ElasticsearchClusterConfig
 from slopbox_domain.k8s.cluster import KubernetesClusterConfig
+from slopbox_domain.metrics.cluster import VictoriaMetricsClusterConfig
 from slopbox_domain.registry import ClusterRegistry
 
 
@@ -26,6 +27,12 @@ MINIMAL_ES = {
 MINIMAL_K8S = {
     "name": "prod-eu",
     "context": "arn:aws:eks:eu-west-1:123456789012:cluster/prod-eu",
+    "environment": "prod",
+}
+
+MINIMAL_VM = {
+    "name": "prod-metrics-a",
+    "host": "http://vm-a.internal:8428",
     "environment": "prod",
 }
 
@@ -53,6 +60,22 @@ REGISTRY_DICT = {
             "name": "staging",
             "context": "arn:aws:eks:us-east-1:123456789012:cluster/staging",
             "environment": "staging",
+        },
+    ],
+    "victoriametrics": [
+        {**MINIMAL_VM, "role": "primary", "tags": {"tier": "gold"}},
+        {
+            "name": "prod-metrics-b",
+            "host": "http://vm-b.internal:8428",
+            "environment": "prod",
+            "role": "replica",
+            "tags": {"tier": "gold"},
+        },
+        {
+            "name": "staging-metrics-a",
+            "host": "http://vm-staging.internal:8428",
+            "environment": "staging",
+            "role": "primary",
         },
     ],
 }
@@ -134,6 +157,46 @@ class TestKubernetesClusterConfig:
     def test_optional_region(self) -> None:
         c = KubernetesClusterConfig(**MINIMAL_K8S, region="aws-eu-west-1")
         assert c.region == "aws-eu-west-1"
+
+
+# ---------------------------------------------------------------------------
+# VictoriaMetricsClusterConfig
+# ---------------------------------------------------------------------------
+
+class TestVictoriaMetricsClusterConfig:
+    def test_valid_minimal(self) -> None:
+        c = VictoriaMetricsClusterConfig(**MINIMAL_VM)
+        assert c.name == "prod-metrics-a"
+        assert c.host == "http://vm-a.internal:8428"
+        assert c.environment == "prod"
+        assert c.role is None
+        assert c.region is None
+        assert c.tags == {}
+
+    def test_optional_role(self) -> None:
+        c = VictoriaMetricsClusterConfig(**MINIMAL_VM, role="primary")
+        assert c.role == "primary"
+
+    def test_optional_region(self) -> None:
+        c = VictoriaMetricsClusterConfig(**MINIMAL_VM, region="aws-us-east-1")
+        assert c.region == "aws-us-east-1"
+
+    def test_tags_default_empty(self) -> None:
+        c = VictoriaMetricsClusterConfig(**MINIMAL_VM)
+        assert c.tags == {}
+
+    def test_tags_populated(self) -> None:
+        c = VictoriaMetricsClusterConfig(**MINIMAL_VM, tags={"tier": "gold"})
+        assert c.tags == {"tier": "gold"}
+
+    def test_forbids_extra_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            VictoriaMetricsClusterConfig(**MINIMAL_VM, unknown_field="value")
+
+    def test_frozen(self) -> None:
+        c = VictoriaMetricsClusterConfig(**MINIMAL_VM)
+        with pytest.raises(Exception):
+            c.name = "changed"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +335,57 @@ class TestClusterRegistryK8sFilter:
 
 
 # ---------------------------------------------------------------------------
+# ClusterRegistry — VM filtering
+# ---------------------------------------------------------------------------
+
+class TestClusterRegistryVmFilter:
+    @pytest.fixture
+    def registry(self) -> ClusterRegistry:
+        return ClusterRegistry.model_validate(REGISTRY_DICT)
+
+    def test_filter_by_environment_prod(self, registry: ClusterRegistry) -> None:
+        result = registry.vm(environment="prod")
+        assert len(result) == 2
+        assert all(c.environment == "prod" for c in result)
+
+    def test_filter_by_environment_staging(self, registry: ClusterRegistry) -> None:
+        result = registry.vm(environment="staging")
+        assert len(result) == 1
+        assert result[0].name == "staging-metrics-a"
+
+    def test_filter_by_role(self, registry: ClusterRegistry) -> None:
+        result = registry.vm(role="primary")
+        assert len(result) == 2
+        assert all(c.role == "primary" for c in result)
+
+    def test_filter_by_name(self, registry: ClusterRegistry) -> None:
+        result = registry.vm(name="prod-metrics-b")
+        assert len(result) == 1
+        assert result[0].host == "http://vm-b.internal:8428"
+
+    def test_filter_by_tag(self, registry: ClusterRegistry) -> None:
+        result = registry.vm(tier="gold")
+        assert len(result) == 2
+        assert all(c.tags.get("tier") == "gold" for c in result)
+
+    def test_filter_by_field_and_tag(self, registry: ClusterRegistry) -> None:
+        result = registry.vm(environment="prod", tier="gold")
+        assert len(result) == 2
+
+    def test_no_match_returns_empty_list(self, registry: ClusterRegistry) -> None:
+        result = registry.vm(environment="dev")
+        assert result == []
+
+    def test_no_filters_returns_all(self, registry: ClusterRegistry) -> None:
+        result = registry.vm()
+        assert len(result) == 3
+
+    def test_unknown_tag_no_match(self, registry: ClusterRegistry) -> None:
+        result = registry.vm(nonexistent_tag="value")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
 # Smoke test against the real clusters.yaml
 # ---------------------------------------------------------------------------
 
@@ -284,6 +398,7 @@ class TestRealClustersYaml:
         r = ClusterRegistry.from_yaml(clusters_path)
         assert len(r.elasticsearch) > 0
         assert len(r.kubernetes) > 0
+        assert len(r.victoriametrics) > 0
 
     def test_all_es_clusters_have_required_fields(self) -> None:
         clusters_path = Path(__file__).parent.parent.parent.parent / "clusters.yaml"
@@ -300,4 +415,12 @@ class TestRealClustersYaml:
         for c in r.kubernetes:
             assert c.name
             assert c.context
+            assert c.environment
+
+    def test_all_vm_clusters_have_required_fields(self) -> None:
+        clusters_path = Path(__file__).parent.parent.parent.parent / "clusters.yaml"
+        r = ClusterRegistry.from_yaml(clusters_path)
+        for c in r.victoriametrics:
+            assert c.name
+            assert c.host
             assert c.environment
