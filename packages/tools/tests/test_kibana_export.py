@@ -579,3 +579,57 @@ async def test_write_manifest_uploads_readme(mock_boto3):
     assert "aws s3 cp" in readme_body
     assert "combined.ndjson" in readme_body
     assert BASE_REQUEST.s3_bucket in readme_body
+
+
+# ---------------------------------------------------------------------------
+# dry_run flag
+# ---------------------------------------------------------------------------
+
+
+@patch("slopbox_temporal.kibana_export.activities._build_es_client")
+async def test_validate_dry_run_logs_mode(mock_build, caplog):
+    """dry_run=True logs the dry-run notice and still returns the doc count."""
+    import logging
+
+    es = _mock_es()
+    es.count.return_value = {"count": 500}
+    mock_build.return_value = es
+
+    dry_run_request = KibanaLogExportRequest(
+        index="logs-*",
+        query={},
+        time_range=BASE_REQUEST.time_range,
+        s3_bucket="b",
+        s3_prefix="p/",
+        dry_run=True,
+    )
+
+    with caplog.at_level(logging.INFO, logger="kibana_export"):
+        result = await validate_export_request(dry_run_request)
+
+    assert result == 500
+    assert any("dry-run" in r.message for r in caplog.records)
+
+
+@patch("slopbox_temporal.kibana_export.activities._build_es_client")
+async def test_validate_non_dry_run_does_not_log_dry_run_mode(mock_build, caplog):
+    """dry_run=False does not emit a dry-run log line."""
+    import logging
+
+    es = _mock_es()
+    es.count.return_value = {"count": 500}
+    mock_build.return_value = es
+
+    live_request = KibanaLogExportRequest(
+        index="logs-*",
+        query={},
+        time_range=BASE_REQUEST.time_range,
+        s3_bucket="b",
+        s3_prefix="p/",
+        dry_run=False,
+    )
+
+    with caplog.at_level(logging.INFO, logger="kibana_export"):
+        await validate_export_request(live_request)
+
+    assert not any("dry-run" in r.message for r in caplog.records)
