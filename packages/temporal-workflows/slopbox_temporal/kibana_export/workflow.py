@@ -91,6 +91,14 @@ class KibanaLogExportWorkflow:
                 retry_policy=_DEFAULT_RETRY,
             )
 
+            if request.dry_run:
+                return KibanaLogExportResult(
+                    total_docs=total_docs,
+                    total_chunks=0,
+                    s3_prefix=request.s3_prefix,
+                    manifest_key="",
+                )
+
             chunk_index = 0
             for index in indices:
                 pit_id: str = await workflow.execute_activity(

@@ -29,6 +29,7 @@ class KibanaLogExportRequest:
     s3_bucket: str
     s3_prefix: str  # e.g. "exports/2024/run-abc/"  (trailing slash required)
     chunk_size: int = 10_000
+    dry_run: bool = True  # safe by default; set False to actually write to S3
 
 
 # ---------------------------------------------------------------------------

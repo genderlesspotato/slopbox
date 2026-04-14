@@ -127,6 +127,11 @@ async def validate_export_request(request: KibanaLogExportRequest) -> int:
             non_retryable=True,
         )
 
+    if request.dry_run:
+        logger.info(
+            "running in dry-run mode (set dry_run=False to enable S3 export)"
+        )
+
     try:
         es = _build_es_client()
     except ApplicationError:
