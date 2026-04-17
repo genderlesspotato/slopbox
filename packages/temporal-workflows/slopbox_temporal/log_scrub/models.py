@@ -7,18 +7,16 @@ its built-in dataclass converter without requiring Pydantic.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
+from slopbox_temporal._shared.time_range import TimeRange
 
-# ---------------------------------------------------------------------------
-# Shared value types
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class TimeRange:
-    start: datetime  # UTC-aware
-    end: datetime    # UTC-aware
+__all__ = [
+    "TimeRange",  # re-exported for backwards compatibility
+    "LogScrubRequest",
+    "DeleteIndexParams",
+    "DeleteIndexResult",
+    "LogScrubResult",
+]
 
 
 # ---------------------------------------------------------------------------

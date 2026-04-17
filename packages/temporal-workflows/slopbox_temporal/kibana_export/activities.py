@@ -22,14 +22,15 @@ import gzip
 import io
 import json
 import logging
-import os
 from datetime import timezone
 
 import boto3
 import botocore.exceptions
-from elasticsearch import AuthenticationException, Elasticsearch, NotFoundError
+from elasticsearch import AuthenticationException, NotFoundError
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
+
+from slopbox_temporal._shared.es_client import build_es_client as _build_es_client
 
 from .models import (
     CleanupParams,
@@ -52,30 +53,6 @@ MAX_EXPORT_DOCS = 250_000
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _build_es_client() -> Elasticsearch:
-    """Construct an Elasticsearch client from environment variables."""
-    host = os.environ.get("ES_HOST")
-    cloud_id = os.environ.get("ES_CLOUD_ID")
-    api_key = os.environ.get("ES_API_KEY")
-    username = os.environ.get("ES_USERNAME")
-    password = os.environ.get("ES_PASSWORD")
-
-    kwargs: dict = {}
-    if api_key:
-        kwargs["api_key"] = api_key
-    elif username and password:
-        kwargs["basic_auth"] = (username, password)
-
-    if cloud_id:
-        return Elasticsearch(cloud_id=cloud_id, **kwargs)
-    if host:
-        return Elasticsearch(host, **kwargs)
-    raise ApplicationError(
-        "ES_HOST or ES_CLOUD_ID must be set",
-        non_retryable=True,
-    )
 
 
 def _build_query(params: ExportChunkParams) -> dict:

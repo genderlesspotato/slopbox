@@ -7,18 +7,23 @@ its built-in dataclass converter without requiring Pydantic.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+
+from slopbox_temporal._shared.time_range import TimeRange
+
+__all__ = [
+    "TimeRange",  # re-exported for backwards compatibility
+    "KibanaLogExportRequest",
+    "ExportChunkParams",
+    "CleanupParams",
+    "WriteManifestParams",
+    "ExportChunkResult",
+    "KibanaLogExportResult",
+]
 
 
 # ---------------------------------------------------------------------------
 # Input / request models
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class TimeRange:
-    start: datetime  # UTC-aware
-    end: datetime  # UTC-aware
 
 
 @dataclass

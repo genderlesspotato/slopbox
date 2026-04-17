@@ -48,6 +48,8 @@ with workflow.unsafe.imports_passed_through():
         validate_scrub_request,
     )
 
+from slopbox_temporal._shared.retry import DEFAULT_RETRY as _DEFAULT_RETRY
+
 from .models import (
     DeleteIndexParams,
     DeleteIndexResult,
@@ -60,14 +62,6 @@ logger = logging.getLogger("log_scrub")
 # ---------------------------------------------------------------------------
 # Retry policies
 # ---------------------------------------------------------------------------
-
-# Short-lived activities: validation, index resolution.
-_DEFAULT_RETRY = RetryPolicy(
-    initial_interval=timedelta(seconds=5),
-    backoff_coefficient=2.0,
-    maximum_interval=timedelta(seconds=30),
-    maximum_attempts=3,
-)
 
 # Long-running delete activity: more attempts since each retry re-attaches to
 # the existing ES task via heartbeat recovery rather than starting from scratch.

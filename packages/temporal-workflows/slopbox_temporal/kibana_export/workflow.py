@@ -47,6 +47,8 @@ with workflow.unsafe.imports_passed_through():
         write_manifest,
     )
 
+from slopbox_temporal._shared.retry import DEFAULT_RETRY as _DEFAULT_RETRY
+
 from .models import (
     CleanupParams,
     ExportChunkParams,
@@ -57,17 +59,6 @@ from .models import (
 )
 
 logger = logging.getLogger("kibana_export")
-
-# ---------------------------------------------------------------------------
-# Retry policy shared by all activities
-# ---------------------------------------------------------------------------
-
-_DEFAULT_RETRY = RetryPolicy(
-    initial_interval=timedelta(seconds=5),
-    backoff_coefficient=2.0,
-    maximum_interval=timedelta(seconds=30),
-    maximum_attempts=3,
-)
 
 
 @workflow.defn
