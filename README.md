@@ -16,9 +16,27 @@ live in a separate package. All share a common `uv`-managed workspace.
 
 ## Workflows
 
-| Workflow | Package | Description |
-|----------|---------|-------------|
-| [`kibana_export`](docs/kibana-log-export.md) | `slopbox-temporal` | Temporal workflow: ES PIT pagination → gzip NDJSON chunks → S3, replacing manual Kibana CSV exports |
+| Workflow | Theme | Package | Description |
+|----------|-------|---------|-------------|
+| [`kibana_export`](docs/kibana-log-export.md) | `log-ops` | `slopbox-temporal` | ES PIT pagination → gzip NDJSON chunks → S3, replacing manual Kibana CSV exports |
+| `log_scrub` | `log-ops` | `slopbox-temporal` | Delete-by-query scrub of sensitive documents across log indices, with index-by-index progress tracking |
+| [`node_drain_reboot`](docs/maintenance-node-drain-reboot.md) | `maintenance` | `slopbox-temporal` | Drain and reboot a single Kubernetes node via Ansible playbooks (cordon → drain → reboot → wait-ready → uncordon) |
+
+### Workers
+
+Workflows are grouped into **themes**; each theme has its own Temporal task
+queue and its own worker process. Worker processes are intentionally scoped
+to the credentials and tools their theme needs — `log-ops` needs ES + S3
+access; `maintenance` needs an SSH key and a playbook repo.
+
+| Theme | Task queue | Entrypoint | Workflows |
+|-------|-----------|------------|-----------|
+| `log-ops` | `log-ops` | `python -m slopbox_temporal.workers.log_ops` | `kibana_export`, `log_scrub` |
+| `maintenance` | `maintenance` | `python -m slopbox_temporal.workers.maintenance` | `node_drain_reboot` |
+
+Both workers read `TEMPORAL_ADDRESS` (default `localhost:7233`) and
+`TEMPORAL_NAMESPACE` (default `default`); each theme documents the
+additional variables its activities need.
 
 ---
 

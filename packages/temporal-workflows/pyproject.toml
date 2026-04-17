@@ -8,6 +8,7 @@ dependencies = [
     "slopbox-domain",
     "elasticsearch>=8.0.0",
     "boto3>=1.26.0",
+    "ansible-runner>=2.3.0",
 ]
 
 [tool.uv.sources]

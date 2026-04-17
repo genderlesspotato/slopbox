@@ -166,6 +166,12 @@ Time-dependent tests patch `ilm_review.time.time` with a fixed timestamp for det
 | `tests/test_client.py` | Unit tests for `slopbox.client` |
 | `tests/test_k8s_client.py` | Unit tests for `slopbox.k8s_client` — `build_client` and `build_api_bundle` |
 | `tests/test_logging.py` | Unit tests for `slopbox.logging` |
+| `packages/temporal-workflows/slopbox_temporal/_shared/` | Theme-agnostic plumbing: `TimeRange`, `build_es_client`, `DEFAULT_RETRY`, `configure_worker_logging` |
+| `packages/temporal-workflows/slopbox_temporal/workers/log_ops.py` | Worker entrypoint for the `log-ops` task queue (`kibana_export`, `log_scrub`) |
+| `packages/temporal-workflows/slopbox_temporal/workers/maintenance.py` | Worker entrypoint for the `maintenance` task queue (`node_drain_reboot`) |
+| `packages/temporal-workflows/slopbox_temporal/maintenance/_shared/` | Theme shared primitives: `MaintenanceTarget`, `build_inventory` / `resolve_target`, `playbook_repo_path`, `run_playbook` (ansible-runner) |
+| `packages/temporal-workflows/slopbox_temporal/maintenance/node_drain_reboot/` | First maintenance workflow: cordon → drain → reboot → wait-ready → uncordon |
+| `docs/maintenance-node-drain-reboot.md` | Operator docs for `node_drain_reboot` |
 | `pyproject.toml` | Project metadata, dependencies, pytest config |
 | `uv.lock` | Pinned dependency tree (committed intentionally) |
 | `.envrc` | direnv: loads `.env`, activates uv venv via `layout uv` |
@@ -493,6 +499,100 @@ clusters.yaml → ClusterRegistry → registry.kubernetes
 - `NodeProfile`, `ResourceItem`, `PillarSnapshot`, `ClusterSnapshot` — **Pydantic**: runtime domain data from the k8s API
 
 **Output:** `INVENTORY_DIR/index.md` + `INVENTORY_DIR/{cluster-name}.md` (also printed to stdout)
+
+---
+
+## Workflow Architecture (`slopbox-temporal`)
+
+Temporal workflows live in `packages/temporal-workflows/slopbox_temporal/`.
+Workflows are grouped into **themes**; each theme gets its own task queue
+and its own worker process.
+
+### Theme layering
+
+```
+slopbox_temporal/
+├── _shared/                  ← theme-agnostic plumbing
+│   ├── time_range.py         ← TimeRange dataclass
+│   ├── es_client.py          ← build_es_client() — envs → Elasticsearch
+│   ├── retry.py              ← DEFAULT_RETRY policy
+│   └── logging.py            ← configure_worker_logging() — JSON to stderr
+├── workers/
+│   ├── log_ops.py            ← task queue "log-ops"
+│   └── maintenance.py        ← task queue "maintenance"
+├── kibana_export/            ← log-ops theme
+├── log_scrub/                ← log-ops theme
+└── maintenance/
+    ├── _shared/              ← maintenance-theme primitives
+    │   ├── targets.py        ← MaintenanceTarget dataclass
+    │   ├── config.py         ← playbook_repo_path(), clusters_yaml_path()
+    │   ├── inventory.py      ← build_inventory(), resolve_target()
+    │   └── ansible.py        ← run_playbook() on ansible-runner
+    └── node_drain_reboot/    ← first maintenance workflow
+```
+
+### Theme rules
+
+- **One task queue, one worker per theme.** Each theme's activities need a
+  distinct set of tools / credentials at runtime (ES + S3 for `log-ops`,
+  SSH key + playbook repo for `maintenance`). Running them in the same
+  process would give the union of those privileges to every activity.
+- **Shared plumbing goes under `_shared/`.** Global primitives
+  (`TimeRange`, ES client factory, default RetryPolicy) live in
+  `slopbox_temporal/_shared/`. Theme-scoped primitives live in
+  `slopbox_temporal/<theme>/_shared/`.
+- **Don't import `slopbox-tools` from workers.** Worker images must stay
+  lean (no Rich, no kubernetes). `_shared/logging.py` provides a minimal
+  JSON-to-stderr logging setup — use that instead of
+  `slopbox.logging.configure_logging`.
+
+### Adding a workflow to an existing theme
+
+1. Create `packages/temporal-workflows/slopbox_temporal/<theme>/<new_workflow>/`
+   with the standard `workflow.py` / `activities.py` / `models.py` layout.
+2. Import shared retry policy: `from slopbox_temporal._shared.retry import DEFAULT_RETRY`.
+3. Register the workflow + activities in
+   `slopbox_temporal/workers/<theme>.py` (`WORKFLOWS` and `ACTIVITIES`
+   lists).
+4. `tests/test_workers.py` asserts worker registration is in sync — if the
+   assertion fails, update it alongside the workflow.
+5. Add a row to the Workflows table in `README.md` and create a docs page
+   under `docs/`.
+
+### Adding a new theme
+
+1. Pick a task-queue name (lowercase, hyphen-separated).
+2. Create `slopbox_temporal/<theme>/` with a theme `__init__.py` and a
+   `_shared/` subpackage for theme primitives.
+3. Create `slopbox_temporal/workers/<theme>.py` following the pattern in
+   `workers/log_ops.py`.
+4. Add the theme to the README Workers table and update the file table
+   above.
+
+### Ansible-runner pattern (`maintenance` theme)
+
+`maintenance/_shared/ansible.py::run_playbook` runs every playbook through
+the `ansible-runner` library rather than hand-rolled `subprocess`.
+`ansible-runner` gives us, for free:
+
+- **Structured event stream.** Each task emits a typed event; we heartbeat
+  Temporal on every event (plus a 15 s floor) so long-running playbooks
+  keep the activity alive.
+- **Artifact directory.** Every run gets its own `private_data_dir` under
+  `$TMPDIR` containing the inventory, event log, stdout, and exit code —
+  the full forensic record is on disk without extra work.
+- **Cancellation.** When Temporal cancels the activity, `run_playbook`
+  sets `runner.canceled = True` and joins the runner thread before
+  re-raising `CancelledError`.
+
+**Dry-run.** `run_playbook(..., dry_run=True)` maps to Ansible's `--check`
+mode so tasks execute without making changes — the entire plumbing is
+exercised exactly as a real run, only the mutations are skipped.
+
+**Playbook repo.** The worker reads
+`MAINTENANCE_PLAYBOOK_REPO_PATH` (non-retryable `ApplicationError` if
+unset) and symlinks it into each run's `project/` directory. The repo
+itself lives outside slopbox — operators check it out on the worker host.
 
 ---
 
